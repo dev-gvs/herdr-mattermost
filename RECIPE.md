@@ -10,6 +10,11 @@ This file is the brief: enough to build the Mattermost panel from an empty folde
 
 The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border`, `selected`, `hover`). Mattermost's tints are the text color at an alpha (`rgba(center-channel-color, a)` becomes `foreground` plus a two-digit alpha). The text is Open Sans, 13px in the sidebar and 14px in messages, with 20px lines.
 
+- **Before there's a login**, the panel is a setup form centered in a 420px column: the Mattermost logo (28px) and "Connect to Mattermost" (18px semibold), then two 34px text boxes with 12px semibold labels:
+  - **Server URL**, hinted "The address you open Mattermost at in a browser."
+  - **Personal access token**, drawn as dots, hinted "In Mattermost: Profile → Security → Personal Access Tokens → Create Token." with a "How to create one" link in `accent` to Mattermost's personal access token docs.
+  - A `dim` note that an admin has to turn tokens on (System Console → Integrations → Integration Management) and allow the account to create them, a 34px `accent` Connect button, and where the login is saved. Errors show under it in `blocked`.
+  - When the account is in more than one team, the form becomes a list of its teams (display name, with the URL name in `dim`) and a Back button.
 - **Wide (620px and up): two columns** split by a draggable divider. The sidebar starts 260px wide (180–480) and the width you drag is remembered. Narrower than 620px, the panel shows the sidebar until you pick a conversation, then the conversation with a ‹ back button.
 - **The sidebar**, edge to edge, every icon in a 16px slot centered 17px from the edge:
   - A 36px **Find channel** bar with a search icon. The whole bar is a button that opens Find Channels. In the framed panel its top-left corner is rounded to the frame (9px).
@@ -44,7 +49,8 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 - **Statuses** (online, away, do not disturb, offline) come from `status_change` events and a poll each minute of the people shown, as Mattermost's own client does.
 - **Opening a channel** marks it read, loads 60 posts and focuses the message box at once. Scrolling up loads 60 older at a time. A channel whose posts aren't loaded yet keeps the previous one on screen for up to 500ms while they load, and the sidebar marks the new one immediately. The last 10 channels' posts stay in memory.
 - **Keyboard**: a click in the panel takes the keyboard, like a pane. If the message box has it, the box keeps it, as in Mattermost. Esc closes popups and cancels an edit. Up/down and Enter drive Find Channels.
-- **The tab badge**: the panel publishes `shared("mattermost.badge")` = `{ mentions, unread }` (mentions as a count, else unread means a dot) for a tab bar button, and `shared("pane-header:mattermost")` = `{ name, detail, icon, tint, loading }` for a pane header.
+- **The tab badge**: the panel publishes `shared("mattermost.badge")` = `{ mentions, unread }` (mentions as a count, else unread means a dot) for a tab bar button, `shared("mattermost.alive")` = the time it last ran (restamped every 15s, cleared when the last copy closes; shared state outlives a restart, so a button treats a stamp older than 40s as not running and grays out), and `shared("pane-header:mattermost")` = `{ name, detail, icon, tint, loading }` for a pane header.
+- **Setup**: Enter in the URL box moves to the token box; Enter there or Connect checks the pair against `/users/me` and `/users/me/teams` before saving anything. A pasted browser address is cut back to the server (`chat.example.com/team/channels/town-square` becomes `https://chat.example.com`; no scheme means `https://`). A 401 says the server didn't accept the token, an HTML answer says no Mattermost server answered there, and an unreachable host says so. One team is saved at once; several ask which. Saving writes the login file, `chmod 600`s it and starts the panel in place, without a reload.
 - **Errors**: a failed first load retries at 5s, doubling to 60s. Requests retry 3 times with a 15s timeout each. Errors show in the panel in `blocked`.
 - Nothing animates by timer: the loading state is the header's spinner.
 
@@ -73,7 +79,7 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
   - `frame: true` draws the panel's own rounded card, whose border turns `accent` while it has the keyboard. Use it where no pane frame is drawn.
   - `channel: "<name>"` and `thread: "<post id>"` choose what opens first.
   - `demo: true` runs on the made-up team in `demo/demo.js`, with no network and no login. The demo leaves the shared badge and header alone, and listens for requests on its own key.
-- **The login**: `~/.config/herdr-app/mattermost.json`, `{ "url": "https://chat.example.com", "token": "<personal access token>", "team": "<team name>" }`, read with `readTextFile`. It sits outside the mod folder so sharing the mod can't take it along. Without a team name it takes your first team. Without the file the panel says what to create.
+- **The login**: `~/.config/herdr-app/mattermost.json`, `{ "url": "https://chat.example.com", "token": "<personal access token>", "team": "<team name>" }`, read with `readTextFile`. It sits outside the mod folder so sharing the mod can't take it along. Without a team name it takes your first team. Without the file, or without `url` or `token` in it, the panel shows the setup form, which writes it with `writeTextFile` and runs `chmod 600` on it.
 - **The API**: Mattermost REST v4 through `fetch`, with `Authorization: Bearer <token>`. The main calls:
   - Loading: `/users/me`, `/users/me/teams`, `/users/me/teams/{team}/channels`, `.../channels/members` and `.../channels/categories`, `/users/me/preferences`, `/config/client?format=old`.
   - Posts and threads: `/channels/{id}/posts?per_page=60&collapsedThreads=true` (`before=` for older), `/posts/{id}/thread`, `/users/{me}/teams/{team}/threads`.
@@ -83,21 +89,21 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 - **Images**: `fetch` returns text only, so avatars, custom emoji, standard emoji images (`/static/emoji/<codepoint>.png`) and thumbnails are downloaded by `exec("curl", ...)` in batches of 40 into `~/.config/herdr-app/data/mattermost/{avatars,emoji,files}`. They are drawn with `image()` once present.
 - **Popups are copies of this mod**: `openOverlay({ mod: "mattermost", kind: "popup", frame: "none", props: { menu | picker | switcher | statusCard | edit } })`. A popup asks the panel to act by writing `shared("mattermost.request")` = `{ id, action, ... }`; the panel acts on each new id once.
 - **Two retained children** (`cx.new(Part, ...)`), the sidebar and the messages, hold the expensive drawing. The root is a cheap frame, because Herdr re-renders every mod's root on every live-data change.
-- **Herdr functions**: `fetch`, `WebSocket`, `exec`, `readTextFile`, `home`, `appHome`, `props`, `shared`, `setShared`, `openOverlay`, `closeOverlay`, `theme`, `settings`, `localStorage`.
+- **Herdr functions**: `fetch`, `WebSocket`, `exec`, `readTextFile`, `writeTextFile`, `home`, `appHome`, `props`, `shared`, `setShared`, `openOverlay`, `closeOverlay`, `theme`, `settings`, `localStorage`.
 
 ## Watch out
 
 - **It reaches the network, runs `curl` and reads files outside its folder.**
   - The token goes only to your Mattermost server: the API, the websocket, and the `curl` downloads of its own images.
   - Webhook icons and other outside images are fetched without the token, and only those downloads follow redirects, so the token never travels with one.
-  - It reads the login from `~/.config/herdr-app/mattermost.json` and writes images under `~/.config/herdr-app/data/mattermost/`.
+  - It reads the login from `~/.config/herdr-app/mattermost.json` (and writes it once, from the setup form) and writes images under `~/.config/herdr-app/data/mattermost/`.
 - **Herdr cuts off a render that runs too long** (about 50ms), leaving the last frame under "This view could not be re-rendered". So:
   - Message text is parsed in tasks before a redraw, not while drawing.
   - Rows are built only about a screen beyond the view.
   - A render that has spent 35ms on rows leaves the oldest out and asks for another, with a full render after 4 short ones.
   - A cut-off part is retried within 200ms.
   - Keep new per-row work light.
-- **State can't be created while drawing**: `InputState.new` and `TextareaState.new` throw. Create text boxes in `init`, and hand popup requests to `cx.timer.after(0, ...)`.
+- **State can't be created while drawing**: `InputState.new` and `TextareaState.new` throw. Create text boxes in `init` (the setup form's too, before knowing whether it's needed), and hand popup requests to `cx.timer.after(0, ...)`.
 - **Presses**:
   - A press that bubbles out of the panel makes Herdr give the keyboard to the block. So the panel's root stops every left press, and text boxes stop their own.
   - GPUI has no group hover. The hovered post is worked out on every pointer move over the panel, not from enter and leave events, which can go missing.
@@ -106,13 +112,15 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 - **Collapsed reply threads** are assumed: counts and order use root posts. A server without them still works, but its counts differ from the web app's.
 - **Open Sans** must be installed; without it text falls back to the UI font and the spacing drifts.
 - **Not built**: Forward, a custom Remind time, the emoji skin-tone picker, keyboard shortcuts inside menus, the + beside the Direct Messages heading, file uploads, and hover-only link underlines (Herdr's markdown always underlines links).
-- **Copy Link and Copy Text** run `wl-copy`, so they work on Wayland only; on X11 or macOS swap in `xclip` or `pbcopy`.
+- **Copy Link and Copy Text** run `wl-copy`, so they work on Wayland only; on X11 or macOS swap in `xclip` or `pbcopy`. Links open with `xdg-open` (`open` on macOS).
+- **`exec` runs in the home folder**, so the setup's `chmod` needs the login file's absolute path; `appHome()` is absolute unless `HERDR_APP_HOME` was given a relative one.
 - Times are 24-hour and local; texts are English.
 
 ## Done when
 
 - `herdr-app check ~/.config/herdr-app/mods/mattermost` passes.
 - With `props: { demo: true }` the panel shows the Acme team: Favorites (engineering, mobile-team), Channels with an unread design and a mention badge on releases, four direct messages (one a group showing 3), and engineering with a saved bot post, reactions, a code block and two thread footers.
+- With no `mattermost.json`, the panel shows the setup form. A wrong token says the server didn't accept it; the right one writes the file with mode `600` and the sidebar appears without reopening the panel.
 - With a real login, the sidebar matches the web app's categories, order and unread state. A message sent from the web app appears within a second, and your reactions show `accent`.
 - Hovering a post shows the action bar and "Last reply …". Moving off it, including into the right-hand panel or the sidebar, hides both.
 - ⋯ on a post opens the menu next to the button, with Remind › opening to the side. The emoji picker reacts and updates Recently Used.

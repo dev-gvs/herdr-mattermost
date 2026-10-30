@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
-import { appHome, exec, readTextFile, theme, props, shared, setShared, openOverlay, closeOverlay, settings } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, openOverlay, closeOverlay, settings } from "herdr";
 import { WebSocket } from "websocket";
 import { Media } from "./src/media.js";
 import { Menu } from "./src/menu.js";
@@ -10,7 +10,6 @@ import { EditDialog, StatusCard } from "./src/dialog.js";
 import { SPECIAL, prepare, tokens, jumbo, mentionNames } from "./src/content.js";
 import { demoApi, DEMO } from "./demo/demo.js";
 
-// The Mattermost MCP server already holds the token; reading it from there keeps one place to rotate it.
 const PAGE = 60;
 const THREAD_PAGE = 30;
 const WIDE = 620;
@@ -32,14 +31,29 @@ const THREADS = "threads";
 // ROW_PAD + ICON_SLOT / 2 = 17. Rows run edge to edge, as in Mattermost.
 const ROW_PAD = 9;
 const ICON_SLOT = 16;
+// Shared state outlives the app, so a tab button can't tell a panel running now from one that ran last time
+// unless the panel keeps restamping it.
+const ALIVE_EVERY = 15e3;
+
+const TOKEN_DOCS = "https://docs.mattermost.com/developers/integrate/reference/personal-access-token";
 
 // The server and token live in the Herdr home, outside the mod folder, so sharing the mod can't take them along.
+const loginPath = () => `${appHome()}/mattermost.json`;
+
+// Null without a login, so the panel asks for one.
 async function config() {
   if (props()?.demo) return DEMO;
-  const own = JSON.parse((await readTextFile(`${appHome()}/mattermost.json`).catch(() => null)) ?? "null");
-  if (!own?.url || !own?.token) throw new Error("No Mattermost login: put url, token and team in ~/.config/herdr-app/mattermost.json");
+  const own = JSON.parse((await readTextFile(loginPath()).catch(() => null)) ?? "null");
+  if (!own?.url || !own?.token) return null;
   return { url: own.url.replace(/\/+$/, ""), token: own.token, team: own.team };
 }
+
+// People paste whatever is in the browser's address bar, often a channel's page.
+const serverUrl = (text) => {
+  const url = text.trim().replace(/\/+$/, "");
+  if (!url) return "";
+  return (/^https?:\/\//i.test(url) ? url : `https://${url}`).replace(/\/[^/]+\/(channels|messages|threads|pl)\/.*$/, "");
+};
 
 const sleep = (cx, ms) => new Promise((resolve) => cx.timer.after(ms, () => resolve()));
 // A stalled TLS handshake otherwise leaves a request pending forever.
@@ -305,6 +319,11 @@ export default class Mattermost extends View {
       input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     }
     this.input.on("submit", (_e, cx) => this.send(cx));
+    this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
+    this.tokenInput = InputState.new({ placeholder: "Paste the token" });
+    this.tokenInput.set_masked(true);
+    this.urlInput.on("submit", () => this.tokenInput.focus());
+    this.tokenInput.on("submit", (_e, cx) => this.connectLogin(cx));
     this.replyInput.on("submit", (_e, cx) => this.send(cx, this.replyInput, this.rhsThread));
     this.threadInput.on("submit", (_e, cx) => this.send(cx, this.threadInput, this.thread));
 
@@ -333,10 +352,15 @@ export default class Mattermost extends View {
       if (this.cfg && this.media.pending()) cx.spawn(async (cx) => { if (await this.media.flush(this.cfg)) this.redraw(cx); });
     });
 
+    if (!props()?.demo) {
+      cx.timer.after(0, () => setShared("mattermost.alive", Date.now()));
+      cx.timer.every(ALIVE_EVERY, () => setShared("mattermost.alive", Date.now()));
+    }
+
     cx.spawn(async (cx) => {
       try {
         this.cfg = await config();
-        this.media.demo = Boolean(this.cfg.demo);
+        this.media.demo = Boolean(this.cfg?.demo);
         Object.assign(this.emoji, JSON.parse(await readTextFile(`${appHome()}/mods/mattermost/emoji/emoji.json`) ?? "{}"));
         await this.media.scan();
       } catch (e) {
@@ -344,19 +368,84 @@ export default class Mattermost extends View {
         this.redraw(cx);
         return;
       }
-      this.connect(cx);
-      // A failed first load would otherwise leave the panel empty until the websocket reconnects.
-      for (let delay = 5000; ; delay = Math.min(delay * 2, 60e3)) {
-        try {
-          await this.load(cx);
-          return;
-        } catch (e) {
-          this.error = `${String(e?.message ?? e)} · retrying in ${delay / 1000}s`;
-          this.redraw(cx);
-          await sleep(cx, delay);
-        }
+      if (!this.cfg) {
+        this.setup = { step: "login" };
+        this.redraw(cx);
+        return;
       }
+      await this.start(cx);
     });
+  }
+
+  async start(cx) {
+    this.connect(cx);
+    // A failed first load would otherwise leave the panel empty until the websocket reconnects.
+    for (let delay = 5000; ; delay = Math.min(delay * 2, 60e3)) {
+      try {
+        await this.load(cx);
+        return;
+      } catch (e) {
+        this.error = `${String(e?.message ?? e)} · retrying in ${delay / 1000}s`;
+        this.redraw(cx);
+        await sleep(cx, delay);
+      }
+    }
+  }
+
+  // Checks the login against the server before saving it, so a typo shows here and not as a failing panel.
+  async connectLogin(cx) {
+    if (this.setup.busy) return;
+    const url = serverUrl(this.urlInput.value()), token = this.tokenInput.value().trim();
+    if (!url || !token) {
+      this.setup = { step: "login", error: "Fill in the server and the token." };
+      return cx.notify();
+    }
+    this.setup = { step: "login", busy: true };
+    cx.notify();
+    const get = async (path) => {
+      let res;
+      try {
+        res = await timed(cx, fetch(`${url}/api/v4${path}`, { headers: { Authorization: `Bearer ${token}` } }));
+      } catch (e) {
+        throw new Error(`Couldn't reach the server: ${e?.message ?? e}`);
+      }
+      if (res.status === 401) throw new Error("The server didn't accept this token.");
+      if (!res.ok) throw new Error(`${url} answered HTTP ${res.status}. Is it the address you open Mattermost at?`);
+      try {
+        return await res.json();
+      } catch {
+        throw new Error(`No Mattermost server answered at ${url}.`);
+      }
+    };
+    try {
+      await get("/users/me");
+      const teams = (await get("/users/me/teams")).filter((t) => !t.delete_at);
+      if (!teams.length) throw new Error("This account isn't in a team yet. Join one in Mattermost first.");
+      if (teams.length === 1) return await this.saveLogin({ url, token, team: teams[0] }, cx);
+      this.setup = { step: "team", url, token, teams: teams.sort((a, b) => a.display_name.localeCompare(b.display_name)) };
+    } catch (e) {
+      this.setup = { step: "login", error: String(e?.message ?? e) };
+    }
+    cx.notify();
+  }
+
+  async saveLogin({ url, token, team }, cx) {
+    const path = loginPath();
+    try {
+      const old = await readTextFile(path).catch(() => null);
+      await writeTextFile(path, `${JSON.stringify({ url, token, team: team.name }, null, 2)}\n`, old);
+      // The token is a password to the person's whole account.
+      await exec("chmod", ["600", path]).catch(() => {});
+    } catch (e) {
+      this.setup = { ...this.setup, busy: false, error: `Couldn't save ${path}: ${e?.message ?? e}` };
+      return cx.notify();
+    }
+    this.cfg = { url, token, team: team.name };
+    this.team = team;
+    this.setup = null;
+    this.tokenInput.set_value("");
+    this.redraw(cx);
+    await this.start(cx);
   }
 
   // Redraws the frame and both parts, since a part is only rebuilt when it is notified.
@@ -375,6 +464,7 @@ export default class Mattermost extends View {
       return;
     }
     OWNERS.delete(this.ownerKey);
+    if (!props()?.demo && ![...OWNERS.values()].some((o) => !o.cfg?.demo)) setShared("mattermost.alive", null);
     await this.ws?.close();
   }
 
@@ -394,7 +484,7 @@ export default class Mattermost extends View {
         if (attempt >= ATTEMPTS) throw new Error(`${method} ${path.split("?")[0]}: ${e?.message ?? e}`);
       }
     }
-    if (!res.ok) throw new Error(`${method} ${path.split("?")[0]}: HTTP ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(`${method} ${path.split("?")[0]}: HTTP ${res.status}`), { status: res.status });
     return res.json();
   }
 
@@ -859,7 +949,13 @@ export default class Mattermost extends View {
       const th = list?.find((x) => x.id === id);
       if (th) Object.assign(th, { unread_replies: 0, unread_mentions: 0, last_viewed_at: Date.now() });
     }
-    await this.api(cx, `/users/${this.me.id}/teams/${this.team.id}/threads/${id}/read/${Date.now()}`, { method: "PUT" });
+    try {
+      await this.api(cx, `/users/${this.me.id}/teams/${this.team.id}/threads/${id}/read/${Date.now()}`, { method: "PUT" });
+    } catch (e) {
+      // A thread you never replied to or followed has no membership, so there is no read state to move.
+      if (e.status === 404) return;
+      throw e;
+    }
     await this.loadThreadTotals(cx);
   }
 
@@ -1442,7 +1538,8 @@ export default class Mattermost extends View {
         this.height = size.height;
         if (was !== this.width >= WIDE) this.redraw(cx);
       })
-      .when(this.width >= WIDE, (el) => el.child(h_resizable("mm-sidebar").size_full()
+      .when(Boolean(this.setup), (el) => el.child(this.setupView(t)))
+      .when(!this.setup && this.width >= WIDE, (el) => el.child(h_resizable("mm-sidebar").size_full()
         // The window keeps a dragged width only while it runs; the last one is stored so it survives a restart.
         .on_resize((sizes, cx) => {
           this.sideW = Math.round(sizes[0]);
@@ -1451,7 +1548,46 @@ export default class Mattermost extends View {
         })
         .child(resizable_panel().size(this.sideW).size_range(SIDE_MIN, SIDE_MAX).child(this.sidePart))
         .child(resizable_panel().child(this.mainPart))))
-      .when(this.width < WIDE, (el) => el.child(this.sidePart).child(this.mainPart));
+      .when(!this.setup && this.width < WIDE, (el) => el.child(this.sidePart).child(this.mainPart));
+  }
+
+  setupView(t) {
+    const s = this.setup;
+    const link = (id, label, url) => h_flex().child(div().id(id).cursor_pointer().text_color(t.accent).hover((st) => st.underline())
+      .on_click(() => exec("xdg-open", [url])).child(label));
+    const field = (id, label, input, ...hint) => v_flex().gap(6)
+      .child(div().text_size(12).font_semibold().child(label))
+      .child(div().id(id).on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); })
+        .child(Input.new(input).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(13)))
+      .child(v_flex().gap(2).text_size(12).text_color(t.muted).children(hint));
+    const button = (id, label, primary, onClick) => div().id(id).h(34).px(16).flex().flex_none().items_center().justify_center().rounded(4)
+      .cursor_pointer().text_size(13).font_semibold()
+      .bg(primary ? t.accent : alpha(t.accent, 0.08)).text_color(primary ? t.accent_foreground : t.accent)
+      .hover((st) => st.bg(primary ? t.accent : alpha(t.accent, 0.12)))
+      .on_click(onClick).child(label);
+    const form = s.step === "team"
+      ? v_flex().gap(8)
+        .child(div().text_color(t.muted).child(`Your account is in ${s.teams.length} teams. Which one should the panel show?`))
+        .children(s.teams.map((team) => h_flex().id(`team-${team.id}`).h(36).px(12).gap(8).items_center().rounded(6).cursor_pointer()
+          .border_1().border_color(t.border).hover((st) => st.bg(t.hover))
+          .on_click((_e, cx) => this.saveLogin({ url: s.url, token: s.token, team }, cx))
+          .child(div().flex_1().truncate().child(team.display_name)).child(div().text_color(t.dim).child(team.name))))
+        .child(h_flex().pt(4).child(button("setup-back", "Back", false, (_e, cx) => { this.setup = { step: "login" }; cx.notify(); })))
+      : v_flex().gap(16)
+        .child(field("setup-url", "Server URL", this.urlInput, "The address you open Mattermost at in a browser."))
+        .child(field("setup-token", "Personal access token", this.tokenInput,
+          "In Mattermost: Profile → Security → Personal Access Tokens → Create Token.", link("setup-docs", "How to create one", TOKEN_DOCS)))
+        .child(div().text_size(12).text_color(t.dim).child("No Personal Access Tokens section? An admin has to turn them on in System Console → Integrations → Integration Management and allow your account to create them."))
+        .child(v_flex().gap(8).items_start()
+          .child(button("setup-connect", s.busy ? "Connecting…" : "Connect", true, (_e, cx) => this.connectLogin(cx)))
+          .child(div().text_size(12).text_color(t.dim).child(`Saved to ${loginPath().replace(home(), "~")}, readable only by you.`)));
+    return v_flex().id("setup").size_full().overflow_y_scrollbar().items_center().p(24)
+      .child(v_flex().w_full().max_w(420).my_auto().gap(20)
+        .child(h_flex().gap(10).items_center()
+          .child(image("mods/mattermost/icons/logo.svg").size(28))
+          .child(div().text_size(18).font_semibold().child("Connect to Mattermost")))
+        .child(form)
+        .when(Boolean(s.error), (el) => el.child(div().text_size(12).text_color(t.blocked).child(s.error))));
   }
 
   mainKind() {

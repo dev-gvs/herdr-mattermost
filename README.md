@@ -20,7 +20,11 @@ Or by hand:
 
 ## Login
 
-Create a personal access token in Mattermost (Profile → Security → Personal Access Tokens), then write `~/.config/herdr-app/mattermost.json` and make it readable only by you (`chmod 600`):
+The first time it opens, the panel asks for your server's address and a personal access token, checks them, lets you pick a team if you're in several, and saves them to `~/.config/herdr-app/mattermost.json`, readable only by you.
+
+To get a token, open Profile → Security → Personal Access Tokens → Create Token in Mattermost ([how to](https://docs.mattermost.com/developers/integrate/reference/personal-access-token)). If that section isn't there, an admin has to enable personal access tokens and allow your account to create them; the same page shows where.
+
+You can also write the file yourself and `chmod 600` it:
 
 ```json
 { "url": "https://chat.example.com", "token": "<token>", "team": "<team name>" }
