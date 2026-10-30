@@ -1,0 +1,161 @@
+// A made-up team that answers the panel's API calls, for screenshots and for trying the mod without a
+// server: open the panel with props { demo: true }. Nothing here reaches the network.
+
+const NOW = Date.now();
+const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
+const today = (h, m) => { const d = new Date(NOW); d.setHours(h, m, 0, 0); return Math.min(d.getTime(), NOW - MIN); };
+const daysAgo = (n, h, m) => today(h, m) - n * DAY;
+
+const ME = "u-alex";
+const TEAM = { id: "t-acme", name: "acme", display_name: "Acme" };
+
+const PEOPLE = [
+  [ME, "alex", "Alex", "Rivera", "Mobile lead"],
+  ["u-sam", "sam", "Sam", "Okafor", "Backend"],
+  ["u-priya", "priya", "Priya", "Nair", "Design"],
+  ["u-jamie", "jamie", "Jamie", "Chen", "QA"],
+  ["u-lena", "lena", "Lena", "Novak", "Android"],
+  ["u-marco", "marco", "Marco", "Silva", "iOS"],
+  ["u-ines", "ines", "Inês", "Duarte", "Product"],
+  ["u-tom", "tom", "Tom", "Becker", "Platform"],
+  ["u-ci", "ci-bot", "", "", ""],
+];
+const USERS = PEOPLE.map(([id, username, first_name, last_name, position]) => ({
+  id, username, first_name, last_name, position, nickname: "", last_picture_update: 0, is_bot: id === "u-ci",
+  props: id === "u-lena" ? { customStatus: JSON.stringify({ emoji: "palm_tree", text: "On holiday until Monday", duration: "dont_clear" }) }
+    : id === "u-sam" ? { customStatus: JSON.stringify({ emoji: "calendar", text: "In a meeting", duration: "dont_clear" }) } : {},
+}));
+const STATUS = { "u-alex": "online", "u-sam": "dnd", "u-priya": "online", "u-jamie": "away", "u-lena": "offline", "u-marco": "online", "u-ines": "away", "u-tom": "offline" };
+
+const channel = (id, type, name, display_name, last, extra = {}) => ({
+  id, type, name, display_name, purpose: "", header: "", create_at: daysAgo(400, 9, 0), delete_at: 0,
+  last_post_at: last, last_root_post_at: last, total_msg_count: 40, total_msg_count_root: 40, ...extra,
+});
+const CHANNELS = [
+  channel("c-eng", "O", "engineering", "engineering", today(11, 42), { header: "Builds, releases and the on-call rota", purpose: "Everything engineering" }),
+  channel("c-mobile", "P", "mobile-team", "mobile-team", today(10, 5)),
+  channel("c-town", "O", "town-square", "Town Square", daysAgo(1, 16, 0)),
+  channel("c-design", "O", "design", "design", today(9, 30), { total_msg_count_root: 42 }),
+  channel("c-releases", "O", "releases", "releases", today(8, 15), { total_msg_count_root: 41 }),
+  channel("c-random", "O", "random", "random", daysAgo(2, 13, 0)),
+  channel("c-dm-sam", "D", `${ME}__u-sam`, "", today(11, 10)),
+  channel("c-dm-priya", "D", `${ME}__u-priya`, "", daysAgo(1, 18, 20)),
+  channel("c-dm-lena", "D", `${ME}__u-lena`, "", daysAgo(3, 12, 0)),
+  channel("c-gm", "G", "gm-acme-1", "jamie, marco, sam", today(9, 50), { total_msg_count_root: 41 }),
+];
+const MEMBERS = CHANNELS.map((c) => ({
+  channel_id: c.id, msg_count: 40, msg_count_root: 40,
+  mention_count: c.id === "c-releases" ? 1 : 0, mention_count_root: c.id === "c-releases" ? 1 : 0,
+  last_viewed_at: c.id === "c-eng" ? NOW : c.last_post_at - (c.total_msg_count_root > 40 ? HOUR : 0),
+  notify_props: { mark_unread: c.id === "c-random" ? "mention" : "all" },
+}));
+const CATEGORIES = [
+  { id: "cat-fav", type: "favorites", display_name: "Favorites", channel_ids: ["c-eng", "c-mobile"], sorting: "", collapsed: false, muted: false },
+  { id: "cat-ch", type: "channels", display_name: "Channels", channel_ids: ["c-town", "c-design", "c-releases", "c-random"], sorting: "alpha", collapsed: false, muted: false },
+  { id: "cat-dm", type: "direct_messages", display_name: "Direct Messages", channel_ids: ["c-dm-sam", "c-gm", "c-dm-priya", "c-dm-lena"], sorting: "recent", collapsed: false, muted: false },
+];
+const GM_MEMBERS = { "c-gm": [ME, "u-jamie", "u-marco", "u-sam"] };
+
+let seq = 0;
+const post = (channel_id, user_id, create_at, message, extra = {}) => ({
+  id: `p-${++seq}`, channel_id, user_id, create_at, update_at: create_at, edit_at: 0, delete_at: 0, root_id: "", type: "",
+  message, props: {}, reply_count: 0, last_reply_at: 0, participants: null, metadata: {}, ...extra,
+});
+const reactions = (postId, list) => list.flatMap(([emoji_name, users]) => users.map((user_id) => ({ user_id, post_id: postId, emoji_name, create_at: NOW })));
+
+const ENG = [];
+const add = (p) => { ENG.push(p); return p; };
+add(post("c-eng", "u-tom", daysAgo(1, 10, 2), "Heads up: the staging database moves to the new cluster tonight at 22:00. Expect ~10 minutes of read-only."));
+const migration = add(post("c-eng", "u-sam", daysAgo(1, 15, 40), "Migration plan for the payments service is up for review. The risky part is the backfill, so I split it into batches of 5k rows:\n\n```sql\nUPDATE payments SET currency = 'EUR'\nWHERE currency IS NULL AND id BETWEEN :from AND :to;\n```\n\nComments welcome before Thursday."));
+add(post("c-eng", "u-lena", daysAgo(1, 15, 52), "Looks good. Can we add a dry-run flag so QA can try it on a copy first?"));
+const release = add(post("c-eng", "u-ci", today(9, 12), "**Release 4.18.0** is out on both stores :rocket:\n\n- Faster cold start on Android\n- New onboarding flow\n- 14 fixes", { props: { from_bot: "true" } }));
+const standup = add(post("c-eng", "u-priya", today(10, 21), "The new settings screens are ready in Figma. @alex could you check the empty states before we hand them over?"));
+add(post("c-eng", "u-marco", today(10, 34), "iOS build is green again, it was a stale cache on the runner."));
+add(post("c-eng", "u-marco", today(10, 35), "Cleaned it up and pinned the Xcode version :white_check_mark:"));
+const lunch = add(post("c-eng", "u-jamie", today(11, 42), "Regression run finished: 412 passed, 0 failed. Ship it :tada:"));
+
+const REPLIES = {
+  [migration.id]: [
+    post("c-eng", "u-tom", daysAgo(1, 16, 5), "Batches of 5k are fine on the new cluster.", { root_id: migration.id }),
+    post("c-eng", "u-jamie", daysAgo(1, 16, 30), "I can run the dry run tomorrow morning.", { root_id: migration.id }),
+    post("c-eng", "u-sam", today(9, 2), "Dry-run flag added, thanks both!", { root_id: migration.id }),
+  ],
+  [standup.id]: [
+    post("c-eng", ME, today(10, 40), "On it, I'll leave comments in the file.", { root_id: standup.id }),
+  ],
+};
+const thread = (root, unread = 0) => {
+  const replies = REPLIES[root.id];
+  root.reply_count = replies.length;
+  root.last_reply_at = replies[replies.length - 1].create_at;
+  root.participants = [...new Set(replies.map((r) => r.user_id))].map((id) => ({ id }));
+  return { id: root.id, reply_count: root.reply_count, last_reply_at: root.last_reply_at, last_viewed_at: NOW - (unread ? DAY : 0),
+    participants: root.participants.map(({ id }) => USERS.find((u) => u.id === id)), post: root, unread_replies: unread, unread_mentions: 0, is_following: true };
+}
+const THREADS = [thread(migration, 1), thread(standup)];
+release.metadata = { reactions: reactions(release.id, [["rocket", ["u-sam", "u-priya", "u-tom"]], ["+1", [ME, "u-lena"]]]) };
+lunch.metadata = { reactions: reactions(lunch.id, [["tada", [ME, "u-marco", "u-priya", "u-ines"]], ["heart", ["u-tom"]]]) };
+standup.metadata = { reactions: reactions(standup.id, [["eyes", [ME]]]) };
+
+const OTHER = {
+  "c-mobile": [post("c-mobile", "u-lena", today(10, 5), "Who is on release duty next week?")],
+  "c-town": [post("c-town", "u-ines", daysAgo(1, 16, 0), "Welcome to the team, @marco! :wave:")],
+  "c-design": [post("c-design", "u-priya", today(9, 30), "New icon set is in the shared library.")],
+  "c-releases": [post("c-releases", "u-ines", today(8, 15), "@alex can you confirm the 4.18 release notes?")],
+  "c-random": [post("c-random", "u-tom", daysAgo(2, 13, 0), "Coffee machine on the 3rd floor is fixed :coffee:")],
+  "c-dm-sam": [post("c-dm-sam", "u-sam", today(11, 10), "Got a minute after lunch for the migration?")],
+  "c-dm-priya": [post("c-dm-priya", "u-priya", daysAgo(1, 18, 20), "Thanks for the review!")],
+  "c-dm-lena": [post("c-dm-lena", "u-lena", daysAgo(3, 12, 0), "See you after the holiday :palm_tree:")],
+  "c-gm": [post("c-gm", "u-jamie", today(9, 50), "Bug bash at 15:00, bring snacks")],
+};
+
+const page = (posts) => ({ order: [...posts].reverse().map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) });
+const postsOf = (id) => (id === "c-eng" ? ENG : OTHER[id] ?? []);
+const findPost = (id) => [...ENG, ...Object.values(OTHER).flat(), ...Object.values(REPLIES).flat()].find((p) => p.id === id);
+
+// Answers like the server would, or throws as a 404 does.
+export async function demoApi(path, method, body) {
+  const [route, query = ""] = path.split("?");
+  const q = new URLSearchParams(query);
+  if (method !== "GET") {
+    if (route === "/users/status/ids") return body.map((user_id) => ({ user_id, status: STATUS[user_id] ?? "offline" }));
+    if (route === "/users/ids") return USERS.filter((u) => body.includes(u.id));
+    if (route === "/users/usernames") return USERS.filter((u) => body.includes(u.username));
+    if (route === "/channels/direct") return CHANNELS.find((c) => c.type === "D" && c.name.includes(body.find((id) => id !== ME))) ?? { id: "c-dm-sam" };
+    if (route.endsWith("/files/search")) return { order: [], file_infos: {} };
+    if (route.endsWith("/channels/search")) return CHANNELS.filter((c) => c.type === "O" && c.name.includes(body.term ?? ""));
+    return {};
+  }
+  let m;
+  if (route === "/users/me") return USERS[0];
+  if (route === "/users/me/teams") return [TEAM];
+  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false" };
+  if (route === "/users/me/preferences/flagged_post") return [{ category: "flagged_post", name: release.id, value: "true" }];
+  if (route === "/users/me/preferences") return CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" }));
+  if (route === `/users/me/teams/${TEAM.id}/channels`) return CHANNELS;
+  if (route === `/users/me/teams/${TEAM.id}/channels/members`) return MEMBERS;
+  if (route === `/users/me/teams/${TEAM.id}/channels/categories` || route.endsWith("/channels/categories")) return { order: CATEGORIES.map((c) => c.id), categories: CATEGORIES };
+  if (route === "/users") {
+    const id = q.get("in_channel");
+    const ids = GM_MEMBERS[id] ?? (id?.startsWith("c-dm") ? [ME, `u-${id.slice(5)}`] : USERS.map((u) => u.id));
+    return USERS.filter((u) => ids.includes(u.id));
+  }
+  if (route === "/users/autocomplete") return { users: USERS.filter((u) => u.username.includes(q.get("name") ?? "")) };
+  if ((m = route.match(/^\/users\/[^/]+\/teams\/[^/]+\/threads$/))) {
+    const list = q.get("unread") === "true" ? THREADS.filter((t) => t.unread_replies) : THREADS;
+    const totals = { total: THREADS.length, total_unread_threads: 1, total_unread_mentions: 0 };
+    return q.get("totalsOnly") === "true" ? totals : { threads: list, ...totals };
+  }
+  if ((m = route.match(/^\/users\/[^/]+\/teams\/[^/]+\/threads\/([^/]+)$/))) return THREADS.find((t) => t.id === m[1]) ?? { is_following: false };
+  if ((m = route.match(/^\/channels\/([^/]+)\/posts$/))) return q.get("before") ? { order: [], posts: {} } : page(postsOf(m[1]));
+  if ((m = route.match(/^\/channels\/([^/]+)\/stats$/))) return { channel_id: m[1], member_count: (GM_MEMBERS[m[1]] ?? USERS).length, pinnedpost_count: m[1] === "c-eng" ? 1 : 0, files_count: 3 };
+  if ((m = route.match(/^\/channels\/([^/]+)\/pinned$/))) return m[1] === "c-eng" ? page([migration]) : page([]);
+  if ((m = route.match(/^\/posts\/([^/]+)\/thread$/))) {
+    const root = findPost(m[1]);
+    return page(root ? [root, ...(REPLIES[root.id] ?? [])] : []);
+  }
+  if (route === "/emoji") return [];
+  throw new Error(`${method} ${route}: HTTP 404`);
+}
+
+export const DEMO = { url: "https://demo.invalid", token: "", team: TEAM.name, demo: true };
