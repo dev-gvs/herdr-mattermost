@@ -46,3 +46,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 Threads:
 
 ![Threads](screenshots/threads.png)
+
+## License
+
+MIT, see [LICENSE](LICENSE). The line icons in `mods/mattermost/icons/` are from [Lucide](https://lucide.dev) under the ISC license ([LICENSE-lucide](mods/mattermost/icons/LICENSE-lucide)). The Mattermost name and logo are trademarks of Mattermost, Inc.; this project is not affiliated with it.
