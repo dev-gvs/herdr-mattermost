@@ -1,6 +1,6 @@
 # Mattermost for Herdr
 
-A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with threads, reactions, the emoji picker, Find Channels, inline editing and the post menu.
+A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing and the post menu. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
 ![Mattermost in Herdr](preview.png)
 
@@ -34,10 +34,11 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 
 ## Privacy
 
-- The token goes only to your Mattermost server: the API, the websocket and the downloads of its images.
-- Webhook icons from other hosts are downloaded without it.
-- Avatars, emoji and thumbnails are cached in `~/.config/herdr-app/data/mattermost/`.
-- The mod runs `curl` for those downloads, and `wl-copy` for Copy Link (Wayland only).
+- The token goes only to your Mattermost server: the API, the websocket and the downloads of its files.
+- `curl` reads the token from `~/.config/herdr-app/data/mattermost/private/curl.conf`, readable only by you. Delete it along with `mattermost.json` to log out.
+- Webhook icons, images in messages and link preview pictures from other hosts are downloaded without the token. Those hosts see your address, as they would in a browser.
+- Avatars, emoji, images and attachments are cached in `~/.config/herdr-app/data/mattermost/`. Files you open stay there for two weeks.
+- The mod runs `curl` for downloads, `xdg-open` for links and files, and `wl-copy` for Copy Link (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, the GIF memory limit and playback (without `mpv`, video opens in your default player).
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 

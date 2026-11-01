@@ -27,9 +27,14 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 - **The channel header**, 36px like the Find channel bar: a star (favorite, `accent` when on), the name with a ▾ menu, the member count, the pinned count and a files icon, each of which opens the right-hand panel, and an ⓘ on the far right. In a direct message the name carries the person's status and custom-status emoji, and its menu is View Info, Mute, Edit Header, Move to ›, Close Direct Message.
 - **Messages**, newest at the bottom:
   - A post is a 53px avatar column (32px avatar, status ring at its bottom right) and the content: the name in 14px semibold, the custom-status emoji (hover it for the status text and when it clears), a BOT tag for bots (10px semibold on an 8% pill), and the time in 12px at 73%. A post within 5 minutes of the same person's previous one leaves the header out.
-  - The text is markdown: bold, lists, links, quotes and code blocks. Standard emoji are Mattermost's own images, and a message of only emoji (up to 8) is drawn at 32px. @mentions are links, and your own name, @channel, @all and @here get the Mattermost theme's mention highlight (Indigo's `#133a91` until your theme preference says otherwise).
+  - The text is markdown: headings, bold, italics, strikethrough, lists, task lists, tables, links, quotes and code blocks. Images in the text (`![alt](url =WxH)`) are drawn as blocks between the text around them. A line holding a custom emoji is laid out word by word with its bold, italics, code and links kept; everything else stays selectable text. Standard emoji are Mattermost's own images, and a message of only emoji (up to 8) is drawn at 32px. @mentions are links, and your own name, @channel, @all and @here get the Mattermost theme's mention highlight (Indigo's `#133a91` until your theme preference says otherwise).
   - Reactions are 24px pills: the emoji at 16px and a count, `accent` bordered when one of them is yours. Hover shows who reacted.
-  - Files show as thumbnails or a name row.
+  - Attached images are drawn up to 350px tall and as wide as the column; several in one post share the row at up to 240×180. Clicking one opens it in a viewer at its own size, shrunk only to fit, with a button for opening the original in another app.
+  - GIFs and animated images show a still with a ▶ GIF badge. A click plays one, a second click stops it, and only one plays at a time.
+  - Videos show their first frame with a play button, the name and the size. A click downloads the file ("Downloading…") and plays it in `mpv`, in its own window with sound and seeking. Audio does the same from a file row.
+  - Other files are a row with an icon, the name, the type and the size; a click downloads the file and opens it with the system's app.
+  - Bot and webhook attachments are cards with a coloured bar (`good`, `warning`, `danger` or any color): pretext above, then author, title, text in markdown, short fields two to a row, image, thumbnail and footer.
+  - Link previews are cards with the site, title, description and picture (full width from 480px wide, else a 75px thumbnail). Links to images are drawn as images. Links to posts are quoted with the author, the text and "Originally posted in ~channel".
   - A thread root has a footer: up to 3 participant avatars (latest first, +N beyond), "N replies" in `accent`, a Follow/Following toggle and, on hover, "Last reply 2 hours ago".
   - Date separators ("Today", "Yesterday", "October 23") sit on the boundary between two posts, 26px tall, a 13px bold label on a line.
   - Saved posts have a "Saved" label with a bookmark above the header.
@@ -60,10 +65,11 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
   - `main.js` holds the panel and `mod.json` its manifest; Herdr needs both at the top.
   - `src/menu.js` holds every menu and its forms.
   - `src/picker.js` is the emoji picker and `src/switcher.js` is Find Channels.
-  - `src/dialog.js` has the status card and the edit-header dialog.
-  - `src/content.js` turns message text into markdown.
-  - `src/media.js` downloads avatars, emoji and thumbnails.
-  - `demo/demo.js` is a made-up team, with its initials avatars in `demo/avatars/`.
+  - `src/dialog.js` has the status card, the edit-header dialog and the image viewer.
+  - `src/content.js` turns message text into the blocks it's drawn as: markdown, images and word-by-word lines.
+  - `src/attach.js` draws files, images, bot attachments and link previews.
+  - `src/media.js` downloads images and files, makes posters and starts the player.
+  - `demo/demo.js` is a made-up team, with its initials avatars in `demo/avatars/` and its pictures and clips in `demo/media/`.
   - `emoji/emoji.json` maps names to characters, and `emoji/picker.json` holds the picker's categories.
   - `icons/` has the SVGs, referenced as `mods/mattermost/icons/<name>.svg`: Lucide-style line icons (24px viewBox, stroke `currentColor`), plus the Mattermost logo and the four status shapes.
   - Modules in `src/` import shared helpers back from `../main.js`.
@@ -86,7 +92,8 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
   - Statuses: `/users/status/ids`.
   - Actions: `/posts`, `/posts/{id}/patch`, `/reactions`, `/channels/members/me/view`, `/posts/{id}/pin`, `/users/{me}/posts/{id}/reminder`, `/users/{me}/posts/{id}/set_unread`, category `PUT`s, preference `PUT`s (`flagged_post`, `recent_emojis`, `direct_channel_show`, `sidebar_settings`), `/channels/direct`, `/teams/{team}/channels/search`, `/users/autocomplete`, `/emoji`.
 - **The websocket**: `WebSocket.connect("<wss url>/api/v4/websocket")`, then an `authentication_challenge` with the token. It reconnects at 2s, doubling to 60s.
-- **Images**: `fetch` returns text only, so avatars, custom emoji, standard emoji images (`/static/emoji/<codepoint>.png`) and thumbnails are downloaded by `exec("curl", ...)` in batches of 40 into `~/.config/herdr-app/data/mattermost/{avatars,emoji,files}`. They are drawn with `image()` once present.
+- **Images**: `fetch` returns text only, so avatars, custom emoji, standard emoji images (`/static/emoji/<codepoint>.png`), thumbnails, previews (`/files/{id}/preview`) and images from messages are downloaded by `exec("curl", ...)` in batches of 40 into `~/.config/herdr-app/data/mattermost/{avatars,emoji,files,images}`. They are drawn with `image()` once present, sized from the post's `metadata.images` or the file's `width` and `height`, so a row doesn't jump when its picture lands.
+- **Video and whole files**: posters come from `curl -r` on the first 8 MiB piped through `ffmpeg`; a video that keeps its index at the end of the file gets no poster, only the play button. Whole files download detached into `data/mattermost/downloads/`, are kept two weeks, and open with `mpv` (falling back to `xdg-open`) or `xdg-open`. `ffmpeg`, `ffprobe` and `mpv` are optional: without them there are no posters, and video opens in the system's player.
 - **Popups are copies of this mod**: `openOverlay({ mod: "mattermost", kind: "popup", frame: "none", props: { menu | picker | switcher | statusCard | edit } })`. A popup asks the panel to act by writing `shared("mattermost.request")` = `{ id, action, ... }`; the panel acts on each new id once.
 - **Two retained children** (`cx.new(Part, ...)`), the sidebar and the messages, hold the expensive drawing. The root is a cheap frame, because Herdr re-renders every mod's root on every live-data change.
 - **Herdr functions**: `fetch`, `WebSocket`, `exec`, `readTextFile`, `writeTextFile`, `home`, `appHome`, `props`, `shared`, `setShared`, `openOverlay`, `closeOverlay`, `theme`, `settings`, `localStorage`.
@@ -95,7 +102,8 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 
 - **It reaches the network, runs `curl` and reads files outside its folder.**
   - The token goes only to your Mattermost server: the API, the websocket, and the `curl` downloads of its own images.
-  - Webhook icons and other outside images are fetched without the token, and only those downloads follow redirects, so the token never travels with one.
+  - Webhook icons, images in messages and link preview pictures are fetched without the token, and only those downloads follow redirects, so the token never travels with one. Fetching them shows those hosts your address, as a browser would. Only `http(s)` URLs from a message are ever fetched, and only `http(s)` and `mailto` links open.
+  - `curl` reads the token from `data/mattermost/private/curl.conf` (mode `600`, in a `700` folder), so it never appears in a process list.
   - It reads the login from `~/.config/herdr-app/mattermost.json` (and writes it once, from the setup form) and writes images under `~/.config/herdr-app/data/mattermost/`.
 - **Herdr cuts off a render that runs too long** (about 50ms), leaving the last frame under "This view could not be re-rendered". So:
   - Message text is parsed in tasks before a redraw, not while drawing.
@@ -103,15 +111,21 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
   - A render that has spent 35ms on rows leaves the oldest out and asks for another, with a full render after 4 short ones.
   - A cut-off part is retried within 200ms.
   - Keep new per-row work light.
+- **`on_size_change` reports window pixels, while layouts and spacers use units that zoom scales**, so convert with `settings().zoom` before storing a size. A row's height is reported only when it changes, so don't throw measured heights away while the row is still drawn.
+- **TextView draws no images**: on Herdr 0.1.11 it reserves a gap and paints nothing, for `http(s)`, `data:` and `<img>` alike (herdrdev/herdr-app#148), and it can't place custom emoji. So messages are split around them, and a text selection stops at each split. An image that stays in a table becomes a link.
+- **`exec` stops a program after 30s**, so whole-file downloads and the player start detached and the panel polls for the result.
+- **Animations are expensive**: `image()` plays GIF and animated WebP natively but decodes every frame up front, and Herdr keeps decoded images until it quits (herdrdev/herdr-app#22). Playing two small clips took the app from 6% to 24% of a core. So they start as stills, one plays at a time, and past 512 MB of decoded frames they open in the player instead. Every static image stays in memory too.
+- **Herdr has no video element or web view**, so a video can't play with sound inside the panel. `mpv --vo=kitty` in a terminal block and flipping frames through `image()` both grow memory without limit (#22).
 - **State can't be created while drawing**: `InputState.new` and `TextareaState.new` throw. Create text boxes in `init` (the setup form's too, before knowing whether it's needed), and hand popup requests to `cx.timer.after(0, ...)`.
 - **Presses**:
   - A press that bubbles out of the panel makes Herdr give the keyboard to the block. So the panel's root stops every left press, and text boxes stop their own.
+  - Never stop a click's propagation. A text selection starts on any press and ends only when the release reaches the window, so a stopped click leaves the pointer selecting text until the next click. To keep a button's press from its parent, stop it in `on_mouse_down` and act there.
   - GPUI has no group hover. The hovered post is worked out on every pointer move over the panel, not from enter and leave events, which can go missing.
   - The action bar reports its own moves, since it sticks out over the post above.
 - **Overlay geometry**: `at` is in window pixels while `width`/`height` grow with Herdr's zoom, so popups are placed with the zoomed size. A `frame: "none"` popup is only as tall as its content, so absolutely positioned content gets an explicit height.
 - **Collapsed reply threads** are assumed: counts and order use root posts. A server without them still works, but its counts differ from the web app's.
 - **Open Sans** must be installed; without it text falls back to the UI font and the spacing drifts.
-- **Not built**: Forward, a custom Remind time, the emoji skin-tone picker, keyboard shortcuts inside menus, the + beside the Direct Messages heading, file uploads, and hover-only link underlines (Herdr's markdown always underlines links).
+- **Not built**: Forward, a custom Remind time, the emoji skin-tone picker, keyboard shortcuts inside menus, the + beside the Direct Messages heading, file uploads, buttons and menus in bot attachments, `~channel` and `#hashtag` links, inline code boxes and paragraph spacing like Mattermost's, and hover-only link underlines (Herdr's markdown always underlines links and draws inline code as a flat background; herdrdev/herdr-app#131).
 - **Copy Link and Copy Text** run `wl-copy`, so they work on Wayland only; on X11 or macOS swap in `xclip` or `pbcopy`. Links open with `xdg-open` (`open` on macOS).
 - **`exec` runs in the home folder**, so the setup's `chmod` needs the login file's absolute path; `appHome()` is absolute unless `HERDR_APP_HOME` was given a relative one.
 - Times are 24-hour and local; texts are English.
@@ -122,6 +136,8 @@ The panel follows the Herdr theme (`background`, `foreground`, `accent`, `border
 - With `props: { demo: true }` the panel shows the Acme team: Favorites (engineering, mobile-team), Channels with an unread design and a mention badge on releases, four direct messages (one a group showing 3), and engineering with a saved bot post, reactions, a code block and two thread footers.
 - With no `mattermost.json`, the panel shows the setup form. A wrong token says the server didn't accept it; the right one writes the file with mode `600` and the sidebar appears without reopening the panel.
 - With a real login, the sidebar matches the web app's categories, order and unread state. A message sent from the web app appears within a second, and your reactions show `accent`.
+- With `props: { demo: true, channel: "design" }`, design shows attached images (one large, two sharing a row), an image between lines of text, a video with a poster, a GIF that plays on click, a file row, a message with a table, a task list and a custom emoji line, a link preview, a bot attachment and a quoted post.
+- A click on the video opens `mpv` with sound, a click on an image opens the viewer, and Esc or a click closes it.
 - Hovering a post shows the action bar and "Last reply …". Moving off it, including into the right-hand panel or the sidebar, hides both.
 - ⋯ on a post opens the menu next to the button, with Remind › opening to the side. The emoji picker reacts and updates Recently Used.
 - Find channel opens the dialog. Typing narrows and ranks; Enter opens the conversation, joining a public channel or starting a direct message if needed.

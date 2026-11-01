@@ -97,10 +97,25 @@ release.metadata = { reactions: reactions(release.id, [["rocket", ["u-sam", "u-p
 lunch.metadata = { reactions: reactions(lunch.id, [["tada", [ME, "u-marco", "u-priya", "u-ines"]], ["heart", ["u-tom"]]]) };
 standup.metadata = { reactions: reactions(standup.id, [["eyes", [ME]]]) };
 
+const file = (id, name, mime_type, extension, size, width = 0, height = 0) => ({ id, name, mime_type, extension, size, width, height, has_preview_image: Boolean(width) });
+const media = (name) => `https://demo.invalid/media/${name}`;
+const DESIGN = [
+  post("c-design", "u-priya", daysAgo(1, 11, 0), "New icon set is in the shared library.", { metadata: { files: [file("f-dashboard", "usage-dashboard.jpg", "image/jpeg", "jpg", 41000, 800, 450)] } }),
+  post("c-design", "u-priya", daysAgo(1, 11, 4), "Both layouts side by side:", { metadata: { files: [file("f-dashboard", "wide.jpg", "image/jpeg", "jpg", 41000, 800, 450), file("f-mobile", "narrow.jpg", "image/jpeg", "jpg", 30000, 600, 800)] } }),
+  post("c-design", "u-marco", daysAgo(1, 14, 10), `A chart inline, between two lines of text:\n\n![Usage](${media("banner.png")} =320x180)\n\nAnd the loop it animates to:\n\n![Loop](${media("anim.gif")} =240x135)`, { metadata: { images: { [media("banner.png")]: { width: 640, height: 360, format: "png", frame_count: 0 }, [media("anim.gif")]: { width: 240, height: 135, format: "gif", frame_count: 24 } } } }),
+  post("c-design", "u-tom", daysAgo(1, 15, 30), "Walkthrough of the new flow, with sound:", { metadata: { files: [file("f-walkthrough", "walkthrough.mp4", "video/mp4", "mp4", 62000)] } }),
+  post("c-design", "u-jamie", daysAgo(1, 15, 42), "Spinner from the prototype, and the spec:", { metadata: { files: [file("f-loop", "spinner.gif", "image/gif", "gif", 90000, 240, 135), file("f-spec", "spec.txt", "text/plain", "txt", 24)] } }),
+  post("c-design", "u-lena", daysAgo(1, 16, 0), "# Review notes\n\n## Done\n\n- [x] ~~old tokens~~ removed\n- [ ] Empty states, see [the guide](https://example.com/guide)\n\n| Screen | Status |\n|---|:-:|\n| Settings | **ready** |\n| Profile | *draft* |\n\n> Keep the `surface` token for cards.\n\nShipping this feels great :party_parrot: **really** `great`, thanks @alex!\n\n1. Spacing\n2. Colour\n\n---\n\nhttps://example.com/guide", { metadata: { emojis: [{ name: "party_parrot", id: "e-party" }] } }),
+  post("c-design", "u-sam", daysAgo(1, 16, 20), "The guide everyone keeps asking for: https://example.com/guide", { metadata: { images: { [media("og-guide.png")]: { width: 640, height: 320, format: "png" } }, embeds: [{ type: "opengraph", url: "https://example.com/guide", data: { title: "Design system guide", description: "Tokens, spacing and the rules for empty states.", site_name: "Example", images: [{ secure_url: media("og-guide.png"), width: 640, height: 320 }] } }] } }),
+  post("c-design", "u-ci", daysAgo(1, 17, 0), "", { props: { from_bot: "true", attachments: [{ color: "good", pretext: "Nightly **screenshot tests** finished", title: "Build #1842", title_link: "https://example.com/builds/1842", text: "All screens match. See the `settings` diff below.", fields: [{ title: "Passed", value: "412", short: true }, { title: "Failed", value: "0", short: true }, { title: "Branch", value: "`main`", short: false }], image_url: media("banner.png"), footer: "CI" }] }, metadata: { images: { [media("banner.png")]: { width: 640, height: 360, format: "png" } } } }),
+  post("c-design", "u-ines", today(9, 25), "Quoting this one: https://demo.invalid/acme/pl/p-quoted", { metadata: { embeds: [{ type: "permalink", data: { team_name: "acme", channel_display_name: "engineering", post: { id: "p-quoted", user_id: "u-sam", message: "Migration plan is **up for review**." } } }] } }),
+  post("c-design", "u-priya", today(9, 30), "New icon set is live."),
+];
+
 const OTHER = {
   "c-mobile": [post("c-mobile", "u-lena", today(10, 5), "Who is on release duty next week?")],
   "c-town": [post("c-town", "u-ines", daysAgo(1, 16, 0), "Welcome to the team, @marco! :wave:")],
-  "c-design": [post("c-design", "u-priya", today(9, 30), "New icon set is in the shared library.")],
+  "c-design": DESIGN,
   "c-releases": [post("c-releases", "u-ines", today(8, 15), "@alex can you confirm the 4.18 release notes?")],
   "c-random": [post("c-random", "u-tom", daysAgo(2, 13, 0), "Coffee machine on the 3rd floor is fixed :coffee:")],
   "c-dm-sam": [post("c-dm-sam", "u-sam", today(11, 10), "Got a minute after lunch for the migration?")],

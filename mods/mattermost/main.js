@@ -2,12 +2,13 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
 import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, openOverlay, closeOverlay, settings } from "herdr";
 import { WebSocket } from "websocket";
-import { Media } from "./src/media.js";
+import { Media, openExternally, playExternally } from "./src/media.js";
+import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
 import { Menu } from "./src/menu.js";
 import { EmojiPicker, PICKER_W, PICKER_H } from "./src/picker.js";
 import { Switcher, SWITCHER_W, SWITCHER_H } from "./src/switcher.js";
-import { EditDialog, StatusCard } from "./src/dialog.js";
-import { SPECIAL, prepare, tokens, jumbo, mentionNames } from "./src/content.js";
+import { EditDialog, StatusCard, Lightbox } from "./src/dialog.js";
+import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { demoApi, DEMO } from "./demo/demo.js";
 
 const PAGE = 60;
@@ -27,6 +28,9 @@ const PARSED = 800;
 // How long a part may spend building message rows before leaving the rest for the next render.
 const ROW_BUDGET = 35;
 const THREADS = "threads";
+// Decoded frames of the animations played so far. Herdr keeps them until it quits, so past this they open in a player.
+const ANIMATION_BUDGET = 512 * 1024 * 1024;
+const UNKNOWN_ANIMATION = 64 * 1024 * 1024;
 // Every sidebar icon sits in a 16px slot centered 17px from the pane edge, under the header's logo:
 // ROW_PAD + ICON_SLOT / 2 = 17. Rows run edge to edge, as in Mattermost.
 const ROW_PAD = 9;
@@ -66,6 +70,8 @@ const FULL_MONTHS = ["January", "February", "March", "April", "May", "June", "Ju
 // Popups ask the panel for things through shared state; a demo panel listens on its own key, so a real
 // one beside it doesn't act on made-up ids.
 export const requestKey = () => (props()?.demo ? "mattermost.demo-request" : "mattermost.request");
+// Links come from whoever wrote the message, so only web and mail addresses go to the system's opener.
+export const openLink = (url) => { if (/^(https?|mailto):/i.test(url)) exec("xdg-open", [url]); };
 export const alpha = (color, a) => (/^#[0-9a-f]{6}$/i.test(color) ? `${color}${pad(Math.round(a * 255).toString(16))}` : color);
 // The panel assumes collapsed reply threads, so the sidebar orders and counts by root posts, as Mattermost does then.
 const lastPost = (c) => c.last_root_post_at || c.last_post_at || c.create_at;
@@ -155,7 +161,7 @@ function dateLabel(ms) {
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-function fileSize(n) {
+export function fileSize(n) {
   if (n < 1024) return `${n}B`;
   return n < 1024 ** 2 ? `${Math.round(n / 1024)}KB` : `${(n / 1024 ** 2).toFixed(1)}MB`;
 }
@@ -214,6 +220,10 @@ export default class Mattermost extends View {
       this.popup = new StatusCard();
       return;
     }
+    if (props()?.lightbox) {
+      this.popup = new Lightbox();
+      return;
+    }
     if (props()?.edit) {
       this.cfgReady = config().then((cfg) => { this.cfg = cfg; });
       this.popup = new EditDialog(this);
@@ -262,6 +272,9 @@ export default class Mattermost extends View {
     this.heights = new Map();
     this.exhausted = new Set();
     this.media = new Media();
+    this.fileState = new Map();
+    this.playing = null;
+    this.animationCost = new Map();
     this.emoji = {};
     this.customEmoji = new Map();
     this.missingEmoji = new Set();
@@ -980,11 +993,77 @@ export default class Mattermost extends View {
     else if (req.action === "threads") this.openThreads(cx);
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
     else if (req.action === "edit") this.startEdit(req.post, cx);
+    else if (req.action === "openFile") this.openFile(req.file, cx);
     else if (req.action === "open") {
       // A conversation opened from a menu may be new to the sidebar.
       if (!this.channels.has(req.channel)) { await this.loadSidebar(cx); this.rows = null; }
       if (this.channels.has(req.channel)) await this.open(req.channel, cx);
     }
+  }
+
+  openLightbox(spec) {
+    openOverlay({ mod: "mattermost", kind: "dialog", frame: "none", width: 0.92, height: 0.92, props: { demo: this.cfg?.demo, lightbox: spec } });
+  }
+
+  // Attachments open outside the panel: Herdr has no video element, and other files need their own apps.
+  openFile(f, cx) {
+    if (this.fileState.get(f.id) === "Downloading…") return;
+    this.fileState.set(f.id, "Downloading…");
+    this.redraw(cx);
+    cx.spawn(async (cx) => {
+      const rel = await this.media.download(this.cfg, f, (ms) => sleep(cx, ms)).catch(() => null);
+      if (rel) {
+        this.fileState.delete(f.id);
+        const path = `${appHome()}/${rel}`;
+        await (/^(video|audio)\//.test(f.mime_type ?? "") ? playExternally(path) : openExternally(path)).catch(() => {});
+      } else this.fileState.set(f.id, "Download failed");
+      this.redraw(cx);
+    });
+  }
+
+  playFileAnimation(f, cx) {
+    if (this.playing?.key === f.id) return this.stopAnimation(cx);
+    if (this.fileState.get(f.id) === "Downloading…") return;
+    this.fileState.set(f.id, "Downloading…");
+    this.redraw(cx);
+    cx.spawn(async (cx) => {
+      const rel = await this.media.download(this.cfg, f, (ms) => sleep(cx, ms)).catch(() => null);
+      if (rel) {
+        this.fileState.delete(f.id);
+        await this.playAnimation(f.id, rel, cx);
+      } else this.fileState.set(f.id, "Download failed");
+      this.redraw(cx);
+    });
+  }
+
+  playRemoteAnimation(key, rel, cx) {
+    if (this.playing?.key === key) return this.stopAnimation(cx);
+    cx.spawn(async (cx) => { await this.playAnimation(key, rel, cx); this.redraw(cx); });
+  }
+
+  stopAnimation(cx) {
+    this.playing = null;
+    this.redraw(cx);
+  }
+
+  // One at a time: each playing animation redraws the window on every frame.
+  async playAnimation(key, rel, cx) {
+    if (!this.animationCost.has(rel)) {
+      const cost = (await this.media.animationBytes(rel)) ?? UNKNOWN_ANIMATION;
+      const spent = [...this.animationCost.values()].reduce((a, b) => a + b, 0);
+      if (spent + cost > ANIMATION_BUDGET) {
+        await playExternally(`${appHome()}/${rel}`).catch(() => {});
+        return;
+      }
+      this.animationCost.set(rel, cost);
+    }
+    this.playing = { key, rel };
+  }
+
+  // The room for an image in a post.
+  contentWidth(scope) {
+    const sc = scope === "c" || scope === "t" ? this : this.rhsScroll;
+    return Math.max(120, (sc.viewW || 480) - AVATAR_COL - POST_PAD - 15);
   }
 
   // Mattermost edits in place: the message becomes a text box until saved or cancelled.
@@ -1060,8 +1139,8 @@ export default class Mattermost extends View {
   // so the messages about to be drawn are parsed before a redraw is asked for rather than during it.
   warm() {
     const posts = this.shownPosts() ?? [];
-    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!p.type) this.parsed(p);
-    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!p.type) this.parsed(p);
+    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!p.type) this.parsed(p.id, p.message ?? "");
+    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!p.type) this.parsed(p.id, p.message ?? "");
   }
 
   shownPosts() {
@@ -1498,7 +1577,7 @@ export default class Mattermost extends View {
     return h_flex().absolute().inset_0().justify_end().opacity(0).hover((s) => s.opacity(1))
       .child(h_flex().id(id).w(30).h_full().pr(8).justify_end().items_center().bg(bg).text_color(t.muted)
         .hover((s) => s.text_color(t.foreground))
-        .on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); })
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); onClick(e, cx); })
         .child(svg("mods/mattermost/icons/dots.svg").size(14)));
   }
 
@@ -1805,7 +1884,9 @@ export default class Mattermost extends View {
 
   // Rows are [key, build]. Every row scrolled past stays in the timeline, and building them all made
   // renders slow enough to be interrupted, so rows away from the screen are spacers of their last
-  // measured height (or EST_ROW before their first draw), walked from the anchored edge.
+  // measured height (or EST_ROW before their first draw), walked from the anchored edge. Sizes arrive in
+  // window pixels and spacers are drawn in layout units: left unconverted, a row leaving the screen became a
+  // taller spacer, and the view jumped against the wheel.
   timeline(key, rows, t, top, sc = this) {
     const view = sc.viewH || 1000;
     // Each row built costs about a millisecond, so little beyond the view is: scrolling renders again anyway.
@@ -1822,20 +1903,23 @@ export default class Mattermost extends View {
         built++;
         if (gap) out.push(div().h(gap).flex_none());
         gap = 0;
-        out.push(div().id(`row-${rowKey}`).on_size_change((size) => { sc.heights.set(rowKey, size.height); }).child(build()));
+        out.push(div().id(`row-${rowKey}`).on_size_change((size) => { sc.heights.set(rowKey, size.height / this.zoom()); }).child(build()));
       }
       from += h;
     }
     if (gap) out.push(div().h(gap).flex_none());
     const content = v_flex().id(`content-${key}`).absolute().left(0).right(0).pb(8)
-      .on_size_change((size) => { sc.contentH = size.height; })
+      .on_size_change((size) => { sc.contentH = size.height / this.zoom(); })
       .children(top ? out : out.reverse());
     return div().id(`viewport-${key}`).relative().flex_1().min_h(0).overflow_hidden()
-      .on_size_change((size) => {
-        // Wrapping changes with width, so heights measured at another width would misplace the spacers.
-        if (size.width !== sc.viewW) sc.heights.clear();
-        sc.viewW = size.width;
-        sc.viewH = size.height;
+      .on_size_change((size, cx) => {
+        // Images are sized from the width, so they have to be drawn again. Known heights stay: a drawn row
+        // whose size didn't change never reports it again, and would fall back to the estimate.
+        const width = size.width / this.zoom();
+        const resized = width !== sc.viewW;
+        sc.viewW = width;
+        sc.viewH = size.height / this.zoom();
+        if (resized) cx.notify(this.mainPart);
       })
       .on_scroll_wheel((e, cx) => this.scrollBy(e.delta.y, cx, sc, top))
       .child(top ? content.top(-sc.offset) : content.bottom(-sc.offset));
@@ -2005,7 +2089,7 @@ export default class Mattermost extends View {
         .child(svg(`mods/mattermost/icons/${icon}.svg`).size(20)).child(div().text_size(12).font_semibold().child(label));
       const section = (title) => div().pt(16).pb(4).text_size(12).font_bold().text_color(alpha(t.foreground, 0.75)).child(title.toUpperCase());
       const md = (id, text) => TextView.markdown(id, prepare(text, this.text)).selectable(true)
-        .on_link_click((url) => { if (!url.startsWith("mention:")) exec("xdg-open", [url]); });
+        .on_link_click((url) => openLink(url));
       // Mattermost shows a pencil while the pointer is over the field; an empty field is itself the way to add one.
       const editable = (field) => {
         const pencil = this.editHover === field ? [svg("mods/mattermost/icons/pencil.svg").size(14).flex_none().mt(3).text_color(t.muted)] : [];
@@ -2178,7 +2262,7 @@ export default class Mattermost extends View {
       .child(div().absolute().inset_0().opacity(0).hover((s) => s.opacity(1))
         .child(div().id(`thm-${th.id}`).absolute().top(6).right(8).size(28).flex().items_center().justify_center().rounded(4)
           .bg(t.hover).text_color(t.muted).hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); menu(); })
+          .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); menu(); })
           .child(svg("mods/mattermost/icons/dots.svg").size(16))))
       .child(h_flex().gap(8).items_center()
         .when(unread, (el) => el.child(div().size(7).flex_none().rounded(4).bg(t.accent)))
@@ -2259,32 +2343,43 @@ export default class Mattermost extends View {
 
   // Turning a message into its parts is regex work that made up most of a render, so it is done once
   // per message text and redone only when the names or emoji it depends on change.
-  parsed(p) {
-    const message = p.message ?? "";
+  parsed(cacheKey, message) {
     const key = `${this.textRev}:${message}`;
-    let hit = this.parsedCache.get(p.id);
+    let hit = this.parsedCache.get(cacheKey);
     if (hit?.key === key) return hit;
     const big = jumbo(message, this.text);
-    // TextView cannot place images inline, so messages with custom emoji are laid out word by word.
-    const custom = !big && [...message.matchAll(SHORTCODES)].some(([, n]) => this.customEmoji.has(n.toLowerCase()));
-    hit = { key, big, lines: custom ? tokens(message, this.text) : null, md: big || custom ? null : prepare(message, this.text) || " " };
+    hit = { key, big, parts: big ? null : segments(message, this.text) };
     if (this.parsedCache.size >= PARSED) this.parsedCache.clear();
-    this.parsedCache.set(p.id, hit);
+    this.parsedCache.set(cacheKey, hit);
     return hit;
   }
 
-  body(p, t) {
-    const { big, lines, md } = this.parsed(p);
-    if (big) return h_flex().gap(4).py(2).children(big.map((tok) => this.emojiEl(tok, 32, t)));
-    if (lines) {
-      return v_flex().children(lines.map((line) => h_flex().flex_wrap().items_center().gap(4).min_h(20)
-        .children(line.filter((tok) => tok.custom || tok.emoji || tok.mention || tok.text.trim())
-          .map((tok) => (tok.custom || tok.emoji ? this.emojiEl(tok, 18, t)
-            : tok.mention ? div().text_color(t.accent).when(tok.mine, (el) => el.bg(this.mentionBg).rounded(2)).child(tok.mention)
-            : div().child(tok.text))))));
-    }
-    return TextView.markdown(`md-${p.id}`, md).selectable(true)
-      .on_link_click((url) => { if (!url.startsWith("mention:")) exec("xdg-open", [url]); });
+  emojiLine(key, line, t) {
+    const scale = line.heading ? [0, 24, 20, 18, 16, 14, 14][line.heading] : 14;
+    const words = line.tokens.map((tok, i) => {
+      if (tok.space) return div().w(4).h(4).flex_none();
+      if (tok.custom || tok.emoji) return this.emojiEl(tok, Math.round(scale * 1.3), t);
+      if (tok.mention) return div().text_color(t.accent).when(tok.mine, (el) => el.bg(this.mentionBg).rounded(2)).child(tok.mention);
+      return div().id(`${key}-w${i}`).when(tok.bold || line.heading > 0, (el) => el.font_bold()).when(tok.italic, (el) => el.italic()).when(tok.strike, (el) => el.line_through())
+        .when(Boolean(tok.code), (el) => el.px(4).rounded(4).bg(alpha(t.foreground, 0.08)).font_family(settings()?.font ?? "monospace").text_size(12))
+        .when(Boolean(tok.link), (el) => el.text_color(t.accent).cursor_pointer().on_click(() => openLink(tok.link)))
+        .child(tok.text);
+    });
+    return h_flex().flex_wrap().items_center().min_h(20).my(2).pl(line.indent * 6).text_size(scale)
+      .when(line.quote, (el) => el.pl(12).border_l_2().border_color(alpha(t.foreground, 0.2)))
+      .when(Boolean(line.marker), (el) => el.child(div().w(18).flex_none().child(line.marker)))
+      .children(words);
+  }
+
+  richText(key, message, t, p, maxW) {
+    const { big, parts } = this.parsed(key, message);
+    if (big) return [h_flex().gap(4).py(2).children(big.map((tok) => this.emojiEl(tok, 32, t)))];
+    return parts.map((part, i) => {
+      const id = i ? `${key}-${i}` : key;
+      if (part.line) return this.emojiLine(id, part.line, t);
+      if (part.image) return div().py(2).child(remoteImage(this, id, part.image.url, p, { ...part.image, maxW }, t));
+      return TextView.markdown(`md-${id}`, part.md).selectable(true).on_link_click((url) => openLink(url));
+    });
   }
 
   reactions(p, t, hovered) {
@@ -2376,7 +2471,6 @@ export default class Mattermost extends View {
   }
 
   userPost(p, grouped, t, inThread, hovered = false, scope = null) {
-    const files = p.metadata?.files ?? [];
     const threadRoot = !inThread && (p.reply_count ?? 0) > 0;
     const time = inThread ? stamp(p.create_at) : clock(p.create_at);
     const person = !fromWebhook(p);
@@ -2399,8 +2493,10 @@ export default class Mattermost extends View {
             .text_size(10).line_height("12px").font_semibold().text_color(t.foreground).child("BOT")))
           .child(div().text_size(12).text_color(t.foreground).opacity(0.73).child(time))
           .when(p.edit_at > 0, (el) => el.child(div().text_size(12).text_color(t.foreground).opacity(0.56).child("Edited")))))
-        .child(this.editing === p.id ? this.editBox(p, t) : this.body(p, t))
-        .children(files.map((f) => div().text_size(13).text_color(t.muted).child(`📎 ${f.name}`)))
+        .children(this.editing === p.id ? [this.editBox(p, t)] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
+        .children(postFiles(this, p, t, scope))
+        .children(postAttachments(this, p, t, scope))
+        .children(postEmbeds(this, p, t, scope))
         .when((p.metadata?.reactions ?? []).length > 0, (el) => el.child(this.reactions(p, t, hovered)))
         .when(threadRoot, (el) => el.child(this.threadFooter(p, t, hovered))),
     ];

@@ -1,9 +1,10 @@
 // Overlays drawn by other copies of this mod: the dialog for editing a channel's purpose or header (the
-// panel picks up the change from the server's channel_updated event), and a user's custom status card.
+// panel picks up the change from the server's channel_updated event), a user's custom status card, and
+// an image at full size.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea } from "gpui-base";
-import { props, closeOverlay, theme } from "herdr";
-import { FONT, alpha } from "../main.js";
+import { props, closeOverlay, theme, setShared } from "herdr";
+import { FONT, alpha, requestKey, openLink } from "../main.js";
 
 const FIELDS = {
   purpose: { title: "Edit Purpose", hint: (kind) => `This text appears in the "View Info" modal of the ${kind}.` },
@@ -76,5 +77,34 @@ export class StatusCard {
         .child(path ? image(path).size(40).flex_none().mb(2) : div().text_size(32).child(char))
         .when(Boolean(text), (el) => el.child(div().font_semibold().text_center().child(text)))
         .when(Boolean(until), (el) => el.child(div().font_semibold().text_center().child(until))));
+  }
+}
+
+// The image keeps its own size unless the window is smaller, so a small screenshot isn't blown up into a blur.
+export class Lightbox {
+  close() {
+    closeOverlay(props().overlay);
+  }
+
+  open() {
+    const { file, url } = props().lightbox;
+    if (url) openLink(url);
+    else setShared(requestKey(), { id: `${Date.now()}-${Math.random()}`, action: "openFile", file });
+  }
+
+  render() {
+    const { path, name, w, h } = props().lightbox;
+    const button = (id, icon, tip) => div().id(id).size(32).flex().items_center().justify_center().rounded(4).cursor_pointer().text_color("#ffffff")
+      .hover((s) => s.bg("#ffffff29")).tooltip(tip).child(svg(`mods/mattermost/icons/${icon}.svg`).size(18));
+    // Every click closes it, and has to reach this root: a text selection starts on any press and ends only
+    // when the release gets to the window, so a stopped click leaves the pointer selecting text in the panel.
+    return v_flex().id("mm-lightbox").size_full().p(8).gap(8).rounded(8).bg("#000000e6").font_family(FONT).text_color("#ffffff").text_size(14)
+      .on_click(() => this.close())
+      .child(h_flex().flex_none().gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().px(8).font_semibold().child(name ?? ""))
+        .child(button("box-open", "globe", "Open in another app").on_click(() => this.open()))
+        .child(button("box-close", "x", "Close")))
+      .child(div().flex_1().min_h(0).flex().items_center().justify_center()
+        .child(w && h ? image(path).w(w).h(h).max_w_full().max_h_full() : image(path).size_full()));
   }
 }
