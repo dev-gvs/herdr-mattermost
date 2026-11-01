@@ -2,20 +2,26 @@
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { alpha, fileSize, openLink } from "../main.js";
+import { MAX_PIXELS } from "./media.js";
 
 // Mattermost's limit for an image in the timeline; several in one post share the row at a smaller size.
 const MAX_H = 350;
 const MANY_W = 240, MANY_H = 180;
 const THUMB = 75;
+// A post's props may hold 800,000 characters, far more than a render has time to parse and draw.
+const MAX_ATTACHMENTS = 20, MAX_FIELDS = 40, MAX_TEXT = 16383;
 // Used until a picture's real shape is known, so the row doesn't jump when it arrives.
 const DEFAULT_W = 400, DEFAULT_H = 225;
 const COLORS = { good: "#339970", success: "#339970", warning: "#CC8F00", danger: "#D24B4E", primary: "#166DE0", default: "#3F4350" };
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+// Herdr throws on anything but a real colour, and the server sends an attachment without one as "".
+const barColor = (color, t) => (Object.hasOwn(COLORS, color) ? COLORS[color] : HEX.test(color) ? color : alpha(t.foreground, 0.2));
 
 const isGif = (f) => f.mime_type === "image/gif" || f.extension?.toLowerCase() === "gif";
 const isVideo = (f) => f.mime_type?.startsWith("video/");
 const isAudio = (f) => f.mime_type?.startsWith("audio/");
 const isPicture = (f) => f.has_preview_image || isGif(f);
-const animatedUrl = (url, meta) => meta?.frame_count > 1 || /\.gif(\?|$)/i.test(url);
+const isAnimated = (view, url, rel, meta) => meta?.frame_count > 1 || /\.gif(\?|$)/i.test(url) || view.media.animated(rel);
 
 function fit(w, h, maxW, maxH) {
   const scale = Math.min(1, maxW / w, maxH / h);
@@ -94,13 +100,24 @@ export function postFiles(view, p, t, scope) {
 export function remoteImage(view, key, url, p, { w, h, link, maxW }, t) {
   const meta = p.metadata?.images?.[url];
   const box = fit(w || (h && meta ? (meta.width * h) / meta.height : meta?.width) || DEFAULT_W, h || (w && meta ? (meta.height * w) / meta.width : meta?.height) || DEFAULT_H, maxW, MAX_H);
-  const rel = view.media.remote(url);
-  if (rel && animatedUrl(url, meta)) {
+  // The server's word saves the download; the file's own size decides when the server didn't look.
+  const declared = meta?.width * meta?.height > MAX_PIXELS;
+  const rel = declared ? null : view.media.remote(url);
+  const huge = declared || Boolean(rel && view.media.oversized(rel));
+  if (rel && !huge && isAnimated(view, url, rel, meta)) {
     return animation(view, key, view.media.still(rel), box, t, (cx) => view.playRemoteAnimation(key, rel, cx));
   }
   return frame(`img-${key}`, box, t).cursor_pointer()
-    .on_click(() => (link ? openLink(link) : rel && view.openLightbox({ path: rel, name: url.split("/").pop(), w: meta?.width, h: meta?.height, url })))
-    .when(Boolean(rel), (el) => el.child(image(rel).size_full()));
+    .on_click(() => (link || huge ? openLink(link ?? url) : rel && view.openLightbox({ path: rel, name: url.split("/").pop(), w: meta?.width, h: meta?.height, url })))
+    .when(huge, (el) => el.child("Too large to show here"))
+    .when(Boolean(rel) && !huge, (el) => el.child(image(rel).size_full()));
+}
+
+// For pictures too small to offer a play button: an animation stays on its first frame.
+function smallPicture(view, url) {
+  const rel = url && view.media.remote(url);
+  if (!rel || view.media.oversized(rel)) return null;
+  return isAnimated(view, url, rel) ? view.media.still(rel) : rel;
 }
 
 function card(color, t, children) {
@@ -115,7 +132,7 @@ function linkText(id, text, url, t, size = 14) {
 }
 
 function small(icon, text, view, t) {
-  const path = icon && view.media.remote(icon);
+  const path = smallPicture(view, icon);
   return h_flex().gap(6).items_center().text_size(12).text_color(t.muted)
     .when(Boolean(path), (el) => el.child(image(path).size(16).flex_none().rounded(2))).child(text);
 }
@@ -125,29 +142,35 @@ export function postAttachments(view, p, t, scope) {
   const list = p.props?.attachments;
   if (!Array.isArray(list)) return [];
   const maxW = Math.min(700, view.contentWidth(scope)) - 40;
-  return list.flatMap((a, i) => {
+  let room = MAX_TEXT;
+  const clip = (text) => {
+    const kept = String(text ?? "").slice(0, Math.max(0, room));
+    room -= kept.length;
+    return kept;
+  };
+  return list.slice(0, MAX_ATTACHMENTS).flatMap((a, i) => {
     const key = `${p.id}-a${i}`;
     const parts = [];
-    if (a.author_name) parts.push(a.author_link ? linkText(`${key}-author`, a.author_name, a.author_link, t, 12) : small(a.author_icon, a.author_name, view, t));
-    if (a.title) parts.push(linkText(`${key}-title`, a.title, a.title_link, t));
-    const thumb = a.thumb_url && view.media.remote(a.thumb_url);
-    const text = a.text ? view.richText(key, a.text, t, p, maxW - (a.thumb_url ? THUMB + 12 : 0)) : null;
+    if (a.author_name) parts.push(a.author_link ? linkText(`${key}-author`, clip(a.author_name), a.author_link, t, 12) : small(a.author_icon, clip(a.author_name), view, t));
+    if (a.title) parts.push(linkText(`${key}-title`, clip(a.title), a.title_link, t));
+    const thumb = smallPicture(view, a.thumb_url);
+    const text = a.text ? view.richText(key, clip(a.text), t, p, maxW - (a.thumb_url ? THUMB + 12 : 0)) : null;
     if (text || thumb) {
       parts.push(h_flex().items_start().gap(12)
         .child(v_flex().flex_1().min_w(0).children(text ?? []))
         .when(Boolean(thumb), (el) => el.child(image(thumb).size(THUMB).flex_none().rounded(4))));
     }
-    const fields = (a.fields ?? []).filter((f) => f.title || f.value);
-    if (fields.length) parts.push(attachmentFields(view, key, fields, t, p, maxW));
+    const fields = (a.fields ?? []).slice(0, MAX_FIELDS).filter((f) => f.title || f.value);
+    if (fields.length) parts.push(attachmentFields(view, key, fields, t, p, maxW, clip));
     if (a.image_url) parts.push(remoteImage(view, `${key}-image`, a.image_url, p, { maxW }, t));
-    if (a.footer) parts.push(small(a.footer_icon, a.footer, view, t));
-    const pretext = a.pretext ? view.richText(`${key}-pre`, a.pretext, t, p, maxW) : [];
-    return [...pretext, card(COLORS[a.color] ?? a.color ?? alpha(t.foreground, 0.2), t, parts)];
+    if (a.footer) parts.push(small(a.footer_icon, clip(a.footer), view, t));
+    const pretext = a.pretext ? view.richText(`${key}-pre`, clip(a.pretext), t, p, maxW) : [];
+    return [...pretext, card(barColor(a.color, t), t, parts)];
   });
 }
 
 // Short fields sit two to a row, long ones take the whole width, in the order they were given.
-function attachmentFields(view, key, fields, t, p, maxW) {
+function attachmentFields(view, key, fields, t, p, maxW, clip) {
   const rows = [];
   for (const f of fields) {
     const last = rows[rows.length - 1];
@@ -155,8 +178,8 @@ function attachmentFields(view, key, fields, t, p, maxW) {
     else rows.push([f]);
   }
   return v_flex().gap(8).children(rows.map((row, r) => h_flex().items_start().gap(12).children(row.map((f, c) => v_flex().flex_1().min_w(0)
-    .child(div().text_size(12).font_semibold().text_color(t.muted).child(String(f.title ?? "")))
-    .children(view.richText(`${key}-f${r}-${c}`, String(f.value ?? ""), t, p, maxW / row.length))))));
+    .child(div().text_size(12).font_semibold().text_color(t.muted).child(clip(f.title)))
+    .children(view.richText(`${key}-f${r}-${c}`, clip(f.value), t, p, maxW / row.length))))));
 }
 
 // Link previews, images linked in a message and quoted posts, which the server works out and sends along.
@@ -177,7 +200,7 @@ function linkPreview(view, key, e, t, p, maxW) {
   if (!title && !description && !url) return [];
   const meta = url ? p.metadata?.images?.[url] ?? picture : null;
   const large = (meta?.width ?? 0) >= 480;
-  const thumb = url && !large && view.media.remote(url);
+  const thumb = !large && smallPicture(view, url);
   return [card(alpha(t.foreground, 0.2), t, [
     ...(site ? [div().text_size(12).text_color(t.muted).child(site)] : []),
     h_flex().items_start().gap(12)

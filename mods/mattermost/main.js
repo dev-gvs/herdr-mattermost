@@ -138,6 +138,8 @@ const JOIN_LEAVE = new Set([
   "system_join_team", "system_leave_team", "system_add_to_team", "system_remove_from_team", "system_join_leave", "system_add_remove",
 ]);
 const fromWebhook = (p) => p.props?.from_webhook === "true";
+// Webhooks and plugins give their posts types of their own, such as slack_attachment, and those are ordinary posts.
+const isSystem = (p) => Boolean(p.type?.startsWith("system_"));
 
 // Keeps a Map to the most recently set entries.
 function remember(map, key, value) {
@@ -375,6 +377,7 @@ export default class Mattermost extends View {
         this.cfg = await config();
         this.media.demo = Boolean(this.cfg?.demo);
         Object.assign(this.emoji, JSON.parse(await readTextFile(`${appHome()}/mods/mattermost/emoji/emoji.json`) ?? "{}"));
+        await this.media.prune();
         await this.media.scan();
       } catch (e) {
         this.error = String(e?.message ?? e);
@@ -690,9 +693,13 @@ export default class Mattermost extends View {
       for (const r of p.metadata?.reactions ?? []) ids.push(r.user_id);
       for (const u of p.participants ?? []) if (u?.id) ids.push(u.id);
       for (const e of p.metadata?.emojis ?? []) this.customEmoji.set(e.name, e.id);
+      const quoted = (p.metadata?.embeds ?? []).map((e) => e.data?.post).filter(Boolean);
+      for (const q of quoted) ids.push(q.user_id);
       this.textRev++;
-      for (const n of mentionNames(p.message ?? "")) if (!this.byUsername.has(n)) names.add(n);
-      for (const [, n] of (p.message ?? "").matchAll(SHORTCODES)) await this.ensureEmoji(cx, n.toLowerCase());
+      for (const text of [p.message ?? "", ...quoted.map((q) => q.message ?? "")]) {
+        for (const n of mentionNames(text)) if (!this.byUsername.has(n)) names.add(n);
+        for (const [, n] of text.matchAll(SHORTCODES)) await this.ensureEmoji(cx, n.toLowerCase());
+      }
     }
     await this.fetchUsers(cx, ids);
     if (names.size) {
@@ -1062,8 +1069,9 @@ export default class Mattermost extends View {
 
   // The room for an image in a post.
   contentWidth(scope) {
-    const sc = scope === "c" || scope === "t" ? this : this.rhsScroll;
-    return Math.max(120, (sc.viewW || 480) - AVATAR_COL - POST_PAD - 15);
+    // Pinned posts aren't in a timeline, so nothing measures them, but their panel has a known width.
+    const room = scope === "c" || scope === "t" ? this.viewW : scope === "r" ? this.rhsScroll.viewW : this.rhsW;
+    return Math.max(120, (room || 480) - AVATAR_COL - POST_PAD - 15);
   }
 
   // Mattermost edits in place: the message becomes a text box until saved or cancelled.
@@ -1139,8 +1147,8 @@ export default class Mattermost extends View {
   // so the messages about to be drawn are parsed before a redraw is asked for rather than during it.
   warm() {
     const posts = this.shownPosts() ?? [];
-    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!p.type) this.parsed(p.id, p.message ?? "");
-    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!p.type) this.parsed(p.id, p.message ?? "");
+    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!isSystem(p)) this.parsed(p.id, p.message ?? "");
+    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "");
   }
 
   shownPosts() {
@@ -1957,7 +1965,7 @@ export default class Mattermost extends View {
   }
 
   grouped(p, prev) {
-    return Boolean(prev) && !prev.type && !p.type && this.authorKey(prev) === this.authorKey(p) && p.create_at - prev.create_at < GROUP_GAP;
+    return Boolean(prev) && !isSystem(prev) && !isSystem(p) && this.authorKey(prev) === this.authorKey(p) && p.create_at - prev.create_at < GROUP_GAP;
   }
 
   // Posts about you being added or removed stay, as in Mattermost.
@@ -2347,8 +2355,16 @@ export default class Mattermost extends View {
     const key = `${this.textRev}:${message}`;
     let hit = this.parsedCache.get(cacheKey);
     if (hit?.key === key) return hit;
-    const big = jumbo(message, this.text);
-    hit = { key, big, parts: big ? null : segments(message, this.text) };
+    // warm() runs this ahead of every redraw, so a message it can't handle comes out as plain text instead of
+    // stopping them all.
+    let big = null, parts;
+    try {
+      big = jumbo(message, this.text);
+      parts = big ? null : segments(message, this.text);
+    } catch {
+      parts = [{ md: message }];
+    }
+    hit = { key, big, parts };
     if (this.parsedCache.size >= PARSED) this.parsedCache.clear();
     this.parsedCache.set(cacheKey, hit);
     return hit;
@@ -2425,18 +2441,27 @@ export default class Mattermost extends View {
       .child(button("more", "ellipsis", "Message actions", false, popup((box) => this.postMenu(p, box))));
   }
 
+  postRow(p, grouped, t, inThread, options) {
+    // A throw from a row would stop the whole part from rendering for as long as that post is on screen.
+    try {
+      return this.drawPost(p, grouped, t, inThread, options);
+    } catch {
+      return div().id(`post-${p.id}`).pl(POST_PAD + AVATAR_COL).py(2).text_size(13).text_color(t.muted).child("This message can't be shown.");
+    }
+  }
+
   // Mattermost's date line lies on the boundary between two posts instead of in a row of its own, so a
   // hovered post's highlight reaches from the line above it to the line below.
-  postRow(p, grouped, t, inThread, { date = null, beforeDate = false, scope = null } = {}) {
+  drawPost(p, grouped, t, inThread, { date = null, beforeDate = false, scope = null } = {}) {
     const key = scope && `${scope}:${p.id}`;
     const hovered = Boolean(key) && this.hoverPost === key;
     const row = h_flex().id(`post-${p.id}`).relative().items_start().pl(POST_PAD).pr(15)
       .pt(date ? 8 + DATE_HALF : grouped ? 0 : 8).pb(beforeDate ? 6 + DATE_HALF : 3)
       .text_size(14).line_height("20px").hover((s) => s.bg(alpha(t.foreground, 0.04)))
       .when(Boolean(key), (el) => el.on_mouse_move(() => { this.moveOn ??= key; }));
-    return row.children(p.type ? this.systemPost(p, t) : this.userPost(p, grouped, t, inThread, hovered, scope))
+    return row.children(isSystem(p) ? this.systemPost(p, t) : this.userPost(p, grouped, t, inThread, hovered, scope))
       .when(Boolean(date), (el) => el.child(this.dateLine(date, t)))
-      .when(hovered && !p.type && this.editing !== p.id, (el) => el.child(this.postActions(p, t, key, scope, date)));
+      .when(hovered && !isSystem(p) && this.editing !== p.id, (el) => el.child(this.postActions(p, t, key, scope, date)));
   }
 
   // Mattermost's thread footer: who replied, latest first, the reply count, and following the thread.

@@ -6,7 +6,18 @@ const MENTION = /(^|[\s(\[*_>~])@([a-z0-9][a-z0-9._\-]*[a-z0-9_]|[a-z0-9])/gi;
 export const SPECIAL = new Set(["channel", "here", "all"]);
 const PICTOGRAPH = /^\p{Extended_Pictographic}/u;
 // Mattermost's `![alt](url =WxH "title")`, optionally inside a link.
-const IMAGE = /\[?!\[([^\]]*)\]\(\s*<?(https?:\/\/[^\s)>]+)>?(?:\s+=(\d*)x?(\d*))?(?:\s+"[^"]*")?\s*\)(?:\]\(\s*([^\s)]+)\s*\))?/gi;
+const IMAGE = /\[?!\[([^\]]*)\]\(\s*<?(https?:\/\/(?:[^\s()<>]|\([^\s()<>]*\))+)>?(?:\s+=(\d*)(?:x(\d*))?)?(?:\s+"[^"]*")?\s*\)(?:\]\(\s*([^\s)]+)\s*\))?/gi;
+// IMAGE can scan the rest of the text from every "![", and Herdr's cut-off can't be caught, so a message
+// made of nothing else would never finish parsing. Past this many, its images stay as typed.
+const MAX_IMAGES = 32;
+const fewImages = (text) => text.split("![").length - 1 <= MAX_IMAGES;
+// A word-by-word line costs an element per word, and a render is cut off at 50 ms. Past this many characters
+// in a message, its custom emoji stay as :names:.
+const WORD_LAYOUT = 2000;
+const LINE_COST = 30;
+// Each line costs a few regexes, and attachments are parsed during a render. A message longer than this isn't split.
+const MAX_LINES = 1000;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
 
 // Mattermost leaves code as typed, so every rewrite skips fenced blocks and inline spans.
 function outsideCode(text, fn) {
@@ -26,8 +37,7 @@ export function mentionNames(text) {
 // since Mattermost breaks lines where CommonMark would join them. Mentions that notify you are
 // highlighted as Mattermost does, with TextView's inline <mark>.
 export function prepare(text, { emoji, mention, mine, highlight }) {
-  const inline = outsideCode(text, (part) => part
-    .replace(IMAGE, (_whole, alt, url) => `[${alt || "image"}](${url})`)
+  const inline = outsideCode(text, (part) => (fewImages(part) ? part.replace(IMAGE, (_whole, alt, url) => `[${alt || "image"}](${url})`) : part)
     .replace(SHORTCODE, (whole, name) => emoji[name.toLowerCase()] ?? whole)
     .replace(MENTION, (whole, before, name) => {
       const bare = name.replace(/\.$/, "");
@@ -41,29 +51,62 @@ export function prepare(text, { emoji, mention, mine, highlight }) {
 }
 
 // TextView reserves room for an image but never draws one, and it can't take custom emoji at all, so
-// those parts of a message are drawn outside it: { md } blocks, { image } blocks and { line } rows. A
-// table stays whole, since splitting one would break it; its images become links instead.
+// those parts of a message are drawn outside it: { md } blocks, { image } blocks and { line } rows. Code and
+// tables stay whole, since splitting one would break it; an image in a table becomes a link instead.
 export function segments(text, ctx) {
   const out = [];
   let md = [];
   const flush = () => {
-    const body = md.join("\n").replace(/^\n+|\s+$/g, "");
+    const body = md.join("\n").replace(/^\n+/, "").trimEnd();
     md = [];
     if (body) out.push({ md: prepare(body, ctx) });
   };
-  text.split(/(```[\s\S]*?```)/g).forEach((part, i) => {
-    if (i % 2) { md.push(part); return; }
-    for (const line of part.split("\n")) {
-      if (/^\s*\|/.test(line)) { md.push(line); continue; }
-      for (const piece of pieces(line)) {
-        if (piece.image) { flush(); out.push(piece); }
-        else if (hasCustom(piece, ctx)) { flush(); out.push({ line: inlineLine(piece, ctx) }); }
-        else md.push(piece);
-      }
+  const lines = text.split(/\r?\n/);
+  if (lines.length > MAX_LINES) {
+    md = lines;
+    flush();
+    return out;
+  }
+  const whole = wholeLines(lines);
+  const images = fewImages(text);
+  let room = WORD_LAYOUT;
+  lines.forEach((line, i) => {
+    if (whole[i]) { md.push(line); return; }
+    for (const piece of images && line.includes("![") ? pieces(line) : [line]) {
+      if (piece.image) { flush(); out.push(piece); }
+      else if (piece.length <= room && piece.includes(":") && hasCustom(piece, ctx)) { room -= piece.length + LINE_COST; flush(); out.push({ line: inlineLine(piece, ctx) }); }
+      else md.push(piece);
     }
   });
   flush();
   return out;
+}
+
+// Which lines markdown reads as code or a table, and so have to reach TextView as typed.
+function wholeLines(lines) {
+  let fence = null, table = false, list = false, code = false, blank = true;
+  return lines.map((line, i) => {
+    const afterBlank = blank;
+    blank = !line.trim();
+    if (fence) {
+      if (fence.test(line)) fence = null;
+      return true;
+    }
+    // An odd number of ``` leaves a block open; an even one is inline code within the line.
+    if (line.includes("```") && line.split("```").length % 2 === 0) { fence = /```/; return true; }
+    if (/^\s*~{3,}/.test(line)) { fence = /^\s*~{3,}\s*$/; return true; }
+    if (blank) { table = false; return false; }
+    if (!table && line.includes("|")) {
+      const next = lines[i + 1] ?? "";
+      table = next.includes("|") && next.includes("-") && /^[\s|:-]+$/.test(next);
+    }
+    if (table || /^\s*\|/.test(line)) return true;
+    const indented = /^(?: {4}|\t)/.test(line);
+    // Indentation under a list item continues the item, and right under a paragraph continues the paragraph.
+    code = indented && !list && (code || afterBlank);
+    if (!indented) list = LIST_ITEM.test(line) || (list && !afterBlank);
+    return code;
+  });
 }
 
 function pieces(line) {
@@ -77,28 +120,30 @@ function pieces(line) {
   }
   out.push(line.slice(at));
   // A list marker or quote sign left with nothing beside it, once its image has moved out.
-  return out.length === 1 ? out : out.filter((p) => p.image || !/^\s*(>|[-*+]|\d+[.)])?\s*$/.test(p));
+  return out.length === 1 ? out : out.filter((p) => p.image || !/^(?:>|[-*+]|\d+[.)])?$/.test(p.trim()));
 }
 
+// matchAll and a regex split each build a new RegExp, which costs about 50 µs in Herdr's engine, and this runs
+// on every line, so these two keep their own and loop over exec.
+const SHORTCODE_SCAN = new RegExp(SHORTCODE);
 const hasCustom = (text, { custom }) => {
-  let found = false;
-  outsideCode(text, (part) => {
-    for (const [, name] of part.matchAll(SHORTCODE)) found ||= custom(name.toLowerCase());
-    return part;
-  });
-  return found;
+  const bare = text.includes("`") ? text.replace(/`[^`]*`/g, " ") : text;
+  SHORTCODE_SCAN.lastIndex = 0;
+  for (let m; (m = SHORTCODE_SCAN.exec(bare)); ) if (custom(m[1].toLowerCase())) return true;
+  return false;
 };
 
-const INLINE = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)[^)]*\)|(\*\*\*|\*\*|__|~~|\*(?=\S)|(?<=\S)\*|(?<![a-z0-9])_(?=\S)|(?<=\S)_(?![a-z0-9]))|:([a-z0-9_+\-]+):|(https?:\/\/[^\s<>]+)|(?<![a-z0-9/])@([a-z0-9][a-z0-9._\-]*[a-z0-9_]|[a-z0-9])|(\s+)/gi;
+const INLINE = /`([^`]+)`|\[([^\]]+)\]\(((?:[^\s()]|\([^\s()]*\))+)[^)]*\)|(\*\*\*|\*\*|__|~~|\*(?=\S)|(?<=\S)\*|(?<![a-z0-9])_(?=\S)|(?<=\S)_(?![a-z0-9]))|:([a-z0-9_+\-]+):|(https?:\/\/[^\s<>]+)|(?<![a-z0-9/])@([a-z0-9][a-z0-9._\-]*[a-z0-9_]|[a-z0-9])|(\s+)/gi;
 
 // One line of markdown as styled words, for the lines that hold a custom emoji.
 function inlineLine(text, { emoji, custom, mention, mine }) {
-  const [, indent, prefix = "", body] = text.match(/^(\s*)(#{1,6}\s+|(?:>\s*)+|[-*+]\s+|\d+[.)]\s+)?(.*)$/);
+  const [, indent, prefix = "", body] = text.match(/^(\s*)(#{1,6}\s+|(?:>\s*)+|[-*+]\s+|\d+[.)]\s+)?([\s\S]*)$/);
   const style = { bold: false, italic: false, strike: false };
   const tokens = [];
   const add = (token) => tokens.push({ ...style, ...token });
   let at = 0;
-  for (const m of body.matchAll(INLINE)) {
+  INLINE.lastIndex = 0;
+  for (let m; (m = INLINE.exec(body)); ) {
     if (m.index > at) add({ text: body.slice(at, m.index) });
     at = m.index + m[0].length;
     const [whole, code, label, url, mark, name, bare, who, space] = m;
