@@ -55,6 +55,14 @@ const CATEGORIES = [
   { id: "cat-dm", type: "direct_messages", display_name: "Direct Messages", channel_ids: ["c-dm-sam", "c-gm", "c-dm-priya", "c-dm-lena"], sorting: "recent", collapsed: false, muted: false },
 ];
 const GM_MEMBERS = { "c-gm": [ME, "u-jamie", "u-marco", "u-sam"] };
+const OUTSIDE_CHANNELS = [channel("c-hiring", "O", "hiring", "Hiring", daysAgo(5, 10, 0)), channel("c-offsite", "O", "offsite-2026", "Offsite 2026", daysAgo(9, 10, 0))];
+const GROUPS = [{ id: "g-mobile", name: "mobile", display_name: "Mobile engineers", member_count: 4, source: "custom" }, { id: "g-oncall", name: "oncall", display_name: "On call", member_count: 2, source: "custom" }];
+const COMMANDS = [
+  ["away", "", "Set your status away"], ["call", "[start|join]", "Start or join a call"], ["dnd", "", "Do not disturb disables desktop and mobile push notifications"], ["echo", "'message' [delay in seconds]", "Echo back text from your account"],
+  ["header", "[text]", "Edit the channel header"], ["help", "", "Open the Mattermost help page"], ["invite", "@[username] ~[channel]", "Invite a user to a channel"], ["join", "~[channel]", "Join the open channel"], ["leave", "", "Leave the current channel"],
+  ["me", "[message]", "Do an action"], ["msg", "@[username] [message]", "Send Direct Message to a user"], ["mute", "~[channel]", "Turns off desktop, email and push notifications for the current channel or the [channel] specified."], ["offline", "", "Set your status offline"], ["online", "", "Set your status online"],
+  ["shrug", "[message]", "Adds ¯\\_(ツ)_/¯ to your message"],
+].map(([name, Hint, Description]) => ({ Complete: name, Suggestion: name, Hint, Description, IconData: "" }));
 
 let seq = 0;
 const post = (channel_id, user_id, create_at, message, extra = {}) => ({
@@ -145,12 +153,18 @@ export async function demoApi(path, method, body) {
     if (route === "/channels/direct") return CHANNELS.find((c) => c.type === "D" && c.name.includes(body.find((id) => id !== ME))) ?? { id: "c-dm-sam" };
     if (route.endsWith("/files/search")) return { order: [], file_infos: {} };
     if (route.endsWith("/channels/search")) return CHANNELS.filter((c) => c.type === "O" && c.name.includes(body.term ?? ""));
+    if (route === "/roles/names") return body.map((name) => ({ name, permissions: ["use_channel_mentions", "use_group_mentions"] }));
+    if (route === "/commands/execute") {
+      const known = COMMANDS.some((c) => body.command.startsWith(`/${c.Suggestion}`));
+      if (!known) throw Object.assign(new Error(`${method} ${route}: HTTP 404`), { status: 404, id: "api.command.execute_command.not_found.app_error", text: `Command with a trigger of '${body.command.split(" ")[0].slice(1)}' not found. To send a message beginning with "/", try adding an empty space at the beginning of the message.` });
+      return { text: `This is the demo, so \`${body.command.trim()}\` did nothing.` };
+    }
     return {};
   }
   let m;
   if (route === "/users/me") return USERS[0];
   if (route === "/users/me/teams") return [TEAM];
-  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true" };
+  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true", EnableCustomGroups: "true", EnableCustomEmoji: "true" };
   if (route === `/users/me/teams/${TEAM.id}/drafts`) return DRAFTS;
   if (route === "/users/me/preferences/flagged_post") return [{ category: "flagged_post", name: release.id, value: "true" }];
   if (route === "/users/me/preferences") return CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" }));
@@ -162,7 +176,23 @@ export async function demoApi(path, method, body) {
     const ids = GM_MEMBERS[id] ?? (id?.startsWith("c-dm") ? [ME, `u-${id.slice(5)}`] : USERS.map((u) => u.id));
     return USERS.filter((u) => ids.includes(u.id));
   }
+  if (route === "/users/autocomplete" && q.get("in_channel")) {
+    const name = (q.get("name") ?? "").toLowerCase();
+    const members = GM_MEMBERS[q.get("in_channel")] ?? USERS.map((u) => u.id).filter((id) => id !== "u-tom" && id !== "u-ines");
+    const found = USERS.filter((u) => [u.username, u.first_name, u.last_name].some((s) => s.toLowerCase().startsWith(name)));
+    return { users: found.filter((u) => members.includes(u.id)), out_of_channel: found.filter((u) => !members.includes(u.id)) };
+  }
   if (route === "/users/autocomplete") return { users: USERS.filter((u) => u.username.includes(q.get("name") ?? "")) };
+  if (route === "/users/me/teams/members") return [{ team_id: TEAM.id, roles: "team_user" }];
+  if (route === "/license/client") return { IsLicensed: "false" };
+  if (route === "/groups") return GROUPS.filter((g) => g.name.startsWith((q.get("q") ?? "").toLowerCase()));
+  if (route.endsWith("/channels/autocomplete")) return [...CHANNELS, ...OUTSIDE_CHANNELS].filter((c) => (c.type === "O" || c.type === "P") && c.name.startsWith((q.get("name") ?? "").trim().toLowerCase()));
+  if (route.endsWith("/commands/autocomplete_suggestions")) {
+    const typed = (q.get("user_input") ?? "").replace(/^\//, "");
+    if (typed.includes(" ")) return COMMANDS.some((c) => typed.startsWith(`${c.Suggestion} `)) ? [{ Complete: typed, Suggestion: "", Hint: "", Description: "" }] : [];
+    return COMMANDS.filter((c) => c.Suggestion.startsWith(typed));
+  }
+  if (route === "/emoji/autocomplete") return [];
   if ((m = route.match(/^\/users\/[^/]+\/teams\/[^/]+\/threads$/))) {
     const list = q.get("unread") === "true" ? THREADS.filter((t) => t.unread_replies) : THREADS;
     const totals = { total: THREADS.length, total_unread_threads: 1, total_unread_mentions: 0 };

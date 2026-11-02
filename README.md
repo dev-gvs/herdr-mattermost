@@ -1,6 +1,6 @@
 # Mattermost for Herdr
 
-A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing, drafts and the post menu. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
+A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing, drafts, the post menu, and Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands). Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
 ![Mattermost in Herdr](preview.png)
 

@@ -9,6 +9,7 @@ import { EmojiPicker, PICKER_W, PICKER_H } from "./src/picker.js";
 import { Switcher, SWITCHER_W, SWITCHER_H } from "./src/switcher.js";
 import { EditDialog, StatusCard, Lightbox } from "./src/dialog.js";
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
+import { Suggest, Directory } from "./src/suggest.js";
 import { demoApi, DEMO } from "./demo/demo.js";
 
 const PAGE = 60;
@@ -29,6 +30,7 @@ const PARSED = 800;
 const ROW_BUDGET = 35;
 const THREADS = "threads";
 const DRAFTS = "drafts";
+const NO_SUCH_COMMAND = "api.command.execute_command.not_found.app_error";
 // Decoded frames of the animations played so far. Herdr keeps them until it quits, so past this they open in a player.
 const ANIMATION_BUDGET = 512 * 1024 * 1024;
 const UNKNOWN_ANIMATION = 64 * 1024 * 1024;
@@ -116,16 +118,16 @@ const MESSAGES_MIN = 420;
 export const FONT = "Open Sans";
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 const CHANNEL_KEYS = ["id", "type", "name", "display_name", "purpose", "header", "create_at", "delete_at",
-  "last_post_at", "last_root_post_at", "total_msg_count", "total_msg_count_root"];
+  "last_post_at", "last_root_post_at", "total_msg_count", "total_msg_count_root", "group_constrained"];
 const slimChannel = (c) => pick(c, CHANNEL_KEYS);
 const slimMember = (m) => ({
-  ...pick(m, ["channel_id", "msg_count", "msg_count_root", "mention_count", "mention_count_root", "last_viewed_at"]),
+  ...pick(m, ["channel_id", "msg_count", "msg_count_root", "mention_count", "mention_count_root", "last_viewed_at", "roles"]),
   notify_props: { mark_unread: m.notify_props?.mark_unread },
 });
 const slimUser = (u) => ({ ...pick(u, ["id", "username", "first_name", "last_name", "nickname", "position", "last_picture_update", "is_bot"]), custom: customStatus(u.props?.customStatus) });
 
 // A user's custom status (`props.customStatus` is JSON text), or null when unset or broken.
-function customStatus(raw) {
+export function customStatus(raw) {
   try {
     const s = raw && JSON.parse(raw);
     return s?.emoji || s?.text ? { emoji: s.emoji ?? "", text: s.text ?? "", duration: s.duration ?? "", expires: Date.parse(s.expires_at ?? "") } : null;
@@ -149,7 +151,9 @@ const JOIN_LEAVE = new Set([
 ]);
 const fromWebhook = (p) => p.props?.from_webhook === "true";
 // Webhooks and plugins give their posts types of their own, such as slack_attachment, and those are ordinary posts.
-const isSystem = (p) => Boolean(p.type?.startsWith("system_"));
+// Answers to commands are "system" posts too, but they read like messages, with markdown and from System.
+const isEphemeral = (p) => p.type === "system_ephemeral";
+const isSystem = (p) => Boolean(p.type?.startsWith("system_")) && !isEphemeral(p);
 
 // Keeps a Map to the most recently set entries.
 function remember(map, key, value) {
@@ -186,7 +190,7 @@ function fileTime(ms) {
 }
 
 // Mattermost clears a timed status at expires_at; "dont_clear" keeps a placeholder date in year 1.
-function liveStatus(custom) {
+export function liveStatus(custom) {
   if (!custom) return null;
   return !custom.duration || custom.duration === "dont_clear" || !(custom.expires < Date.now()) ? custom : null;
 }
@@ -260,6 +264,9 @@ export default class Mattermost extends View {
     OWNERS.set(this.ownerKey, this);
     this.sidePart = cx.new(Part, { owner: this.ownerKey, part: "side" });
     this.mainPart = cx.new(Part, { owner: this.ownerKey, part: "main" });
+    this.parts = { side: this.sidePart, main: this.mainPart };
+    this.suggesters = {};
+    this.directory = new Directory(this);
     this.channels = new Map();
     this.members = new Map();
     this.users = new Map();
@@ -339,20 +346,29 @@ export default class Mattermost extends View {
     // before reporting Enter, so a plain Enter saves the text as it was just before; Shift+Enter keeps it.
     this.editInput = TextareaState.new({ placeholder: "Edit the post..." });
     this.editInput.set_auto_grow(1, 14);
-    this.editInput.on("change", () => { this.editPrev = this.editNow; this.editNow = this.editInput.value(); });
+    this.editInput.on("change", (_e, cx) => { this.editPrev = this.editNow; this.editNow = this.editInput.value(); this.editSuggest.changed(cx); });
     this.editInput.on("submit", (e, cx) => {
       if (e.shift || !this.editing) return;
-      this.editInput.set_value(this.editPrev ?? "");
-      this.saveEdit(cx);
+      this.editSuggest.dropLineBreak(this.editPrev ?? "");
+      if (!this.editSuggest.submit(e, cx)) this.saveEdit(cx);
     });
+    this.editInput.on("blur", (_e, cx) => this.editSuggest.blur(cx));
+    this.editSuggest = this.newSuggest(cx, this.editInput, () => {
+      const p = this.editing && this.findAnyPost(this.editing);
+      return { channel: p?.channel_id, root: p?.root_id ?? "" };
+    }, { commands: false });
     // The side panel has no pane frame, so the mod draws one; its border follows the keyboard like a pane's.
     this.frame = Boolean(props()?.frame);
     this.focus = cx.focus_handle();
     for (const box of this.boxes) {
+      box.suggest = this.newSuggest(cx, box.input, () => ({
+        channel: box.thread ? this.drafts.get(box.key)?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key,
+        root: box.thread ? box.key : "",
+      }), { execute: (cx) => this.send(box, cx) });
       box.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
-      box.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-      box.input.on("change", () => this.noteDraft(box));
-      box.input.on("submit", (_e, cx) => this.send(box, cx));
+      box.input.on("blur", (_e, cx) => { this.typing = false; box.suggest.blur(cx); cx.notify(); });
+      box.input.on("change", (_e, cx) => { this.noteDraft(box); box.suggest.changed(cx); });
+      box.input.on("submit", (e, cx) => { if (!box.suggest.submit(e, cx)) this.send(box, cx); });
     }
     this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
     this.tokenInput = InputState.new({ placeholder: "Paste the token" });
@@ -370,7 +386,7 @@ export default class Mattermost extends View {
     cx.timer.every(200, (cx) => {
       if (!this.unfinished.size) return;
       this.warm();
-      for (const part of this.unfinished) cx.notify(part === "side" ? this.sidePart : this.mainPart);
+      for (const part of this.unfinished) cx.notify(this.parts[part]);
       this.unfinished.clear();
     });
 
@@ -491,7 +507,15 @@ export default class Mattermost extends View {
       this.warm();
       cx.notify(this.sidePart);
       cx.notify(this.mainPart);
+      for (const s of Object.values(this.suggesters)) if (s.isOpen()) cx.notify(s.part);
     }
+  }
+
+  // Each list is a retained part of its own, so moving through it doesn't rebuild the messages.
+  newSuggest(cx, input, where, options) {
+    const name = `suggest-${Object.keys(this.suggesters).length}`;
+    const part = this.parts[name] = cx.new(Part, { owner: this.ownerKey, part: name });
+    return this.suggesters[name] = new Suggest(this, input, where, part, name, options);
   }
 
   async close() {
@@ -521,7 +545,10 @@ export default class Mattermost extends View {
         if (attempt >= ATTEMPTS) throw new Error(`${method} ${path.split("?")[0]}: ${e?.message ?? e}`);
       }
     }
-    if (!res.ok) throw Object.assign(new Error(`${method} ${path.split("?")[0]}: HTTP ${res.status}`), { status: res.status });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw Object.assign(new Error(`${method} ${path.split("?")[0]}: HTTP ${res.status}`), { status: res.status, id: body?.id, text: body?.message });
+    }
     return res.json();
   }
 
@@ -604,6 +631,10 @@ export default class Mattermost extends View {
     this.showJoinLeave = (joinLeave ?? this.clientConfig?.EnableJoinLeaveMessageByDefault ?? "true") === "true";
     this.draftsSynced = this.clientConfig?.AllowSyncedDrafts === "true" && prefs.find((x) => x.category === "advanced_settings" && x.name === "sync_drafts")?.value !== "false";
     this.dmLimit = Number(prefs.find((x) => x.category === "sidebar_settings" && x.name === "limit_visible_dms_gms")?.value) || DM_LIMIT;
+    this.skinTone = prefs.find((x) => x.category === "emoji" && x.name === "emoji_skintone")?.value ?? "default";
+    try {
+      this.recentEmoji = new Set(JSON.parse(prefs.find((x) => x.category === "recent_emojis" && x.name === this.me.id)?.value ?? "[]").map((r) => r.name));
+    } catch {}
     // Mattermost's switcher takes a channel's last view as the latest of the member's last_viewed_at
     // and these two preferences, since the server moves last_viewed_at only when posts arrive.
     try {
@@ -1033,6 +1064,7 @@ export default class Mattermost extends View {
     box.key = null;
     box.input.set_value(oneLine(text));
     box.shown = box.input.value();
+    box.suggest.reset();
     box.key = key;
   }
 
@@ -1138,11 +1170,16 @@ export default class Mattermost extends View {
   // A post the server refuses goes back to being a draft, ahead of anything typed since.
   sendDraft(d, cx) {
     const key = draftKey(d);
+    // A second Enter on a command the server doesn't know sends it as text, as its error says.
+    const command = d.message.startsWith("/") && this.notCommand !== d.message;
+    this.notCommand = null;
+    this.error = null;
     this.clearDraft(key, cx);
     this.redraw(cx);
     cx.spawn(async (cx) => {
       try {
-        await this.api(cx, "/posts", { method: "POST", body: {
+        if (command) await this.runCommand(d, cx);
+        else await this.api(cx, "/posts", { method: "POST", body: {
           channel_id: d.channel_id, root_id: d.root_id, message: d.message.trim(), file_ids: d.file_ids ?? [], props: d.props ?? {},
           ...(d.priority ? { metadata: { priority: d.priority } } : {}),
         } });
@@ -1153,10 +1190,56 @@ export default class Mattermost extends View {
         this.draftsTouched = true;
         this.fillBox(key, message);
         this.pushDraft(key, cx);
-        this.error = String(e?.message ?? e);
+        if (e?.id === NO_SUCH_COMMAND && message === d.message) this.notCommand = message;
+        this.error = e?.text ?? String(e?.message ?? e);
         this.redraw(cx);
       }
     });
+  }
+
+  // Commands with a screen of their own in Mattermost open the matching one here; the rest are the server's.
+  async runCommand(d, cx) {
+    const c = this.channels.get(d.channel_id), space = d.message.indexOf(" ");
+    const end = space < 0 ? d.message.length : space, name = d.message.slice(0, end).toLowerCase();
+    const command = `${name} ${d.message.slice(end).trim()}`;
+    const bare = d.message.trimEnd() === name;
+    if (name === "/leave" && c) {
+      if (d.root_id) return this.addEphemeral(d, "/leave is not supported in reply threads. Use it in the center channel instead.", cx);
+      if (c.type === "P") return this.channelMenu(c, null, "leave");
+      if (c.type === "D" || c.type === "G") {
+        await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: [{ user_id: this.me.id, category: c.type === "D" ? "direct_channel_show" : "group_channel_show", name: c.type === "D" ? this.dmPeer(c) : c.id, value: "false" }] });
+        return;
+      }
+    }
+    if (c && bare && (name === "/header" || (name === "/purpose" && c.type !== "D" && c.type !== "G"))) {
+      const field = name.slice(1);
+      openOverlay({ mod: "mattermost", kind: "dialog", width: 640, height: 370, props: { demo: this.cfg?.demo, edit: { field, value: c[field] ?? "", channel: { id: c.id, type: c.type, name: c.name, display: this.channelName(c), header: c.header ?? "", purpose: c.purpose ?? "" } } } });
+      return;
+    }
+    const res = await this.api(cx, "/commands/execute", { method: "POST", body: { command, channel_id: d.channel_id, team_id: this.team.id, root_id: d.root_id } });
+    // The demo has no websocket to bring the answer.
+    if (this.cfg.demo && res.text) this.addEphemeral(d, res.text, cx);
+    if (res.goto_location) await this.goTo(res.goto_location, cx);
+  }
+
+  // Where a command wants to take you: a conversation here when it's on this server, else the browser.
+  async goTo(url, cx) {
+    const path = url.startsWith("/") ? url : url.startsWith(this.cfg.url) ? url.slice(this.cfg.url.length) : null;
+    if (path === null) return openLink(url);
+    const [, kind, name] = /^\/[^/]+\/(channels|messages)\/([^/?#]+)/.exec(path) ?? [];
+    if (!kind) return;
+    const find = () => [...this.channels.values()].find((c) => (name.startsWith("@")
+      ? c.type === "D" && this.users.get(this.dmPeer(c))?.username === name.slice(1)
+      : c.name === name));
+    if (!find()) { await this.loadSidebar(cx); this.rows = null; }
+    const c = find();
+    if (c) await this.open(c.id, cx);
+  }
+
+  addEphemeral(d, message, cx) {
+    const post = { id: `ephemeral-${Date.now()}`, channel_id: d.channel_id, root_id: d.root_id, user_id: this.me.id, create_at: Date.now(), type: "system_ephemeral", message, props: {} };
+    (d.root_id ? this.threadPosts.get(d.root_id) : this.posts.get(d.channel_id))?.push(post);
+    this.redraw(cx);
   }
 
   // Leaves the Drafts page for the conversation, whose box then holds the draft.
@@ -1295,6 +1378,7 @@ export default class Mattermost extends View {
     this.editing = id;
     this.editInput.set_value(p.message ?? "");
     this.editPrev = this.editNow = p.message ?? "";
+    this.editSuggest.reset(0);
     this.redraw(cx);
     this.editInput.focus();
   }
@@ -1309,6 +1393,7 @@ export default class Mattermost extends View {
 
   cancelEdit(cx) {
     this.editing = null;
+    this.editSuggest.reset();
     this.redraw(cx);
   }
 
@@ -1340,9 +1425,9 @@ export default class Mattermost extends View {
     const text = this.editInput.value();
     return v_flex().pt(8).gap(0)
       .on_key_down((e, cx) => { if (e.keystroke === "escape") this.cancelEdit(cx); })
-      .child(div().id("edit-box").px(16).pt(13).pb(12).rounded(4).border_1().border_color(t.input).bg(t.background)
-        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.editInput.focus(); })
-        .child(Textarea.new(this.editInput).w_full().text_size(14)))
+      .child(this.editSuggest.keys(div().id("edit-box"), 16).px(16).pt(13).pb(12).rounded(4).border_1().border_color(t.input).bg(t.background)
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.editInput.focus(); this.editSuggest.moved(cx); })
+        .child(this.editSuggest.around(Textarea.new(this.editInput).w_full().text_size(14))))
       .when(text.includes("@"), (el) => el.child(h_flex().pt(6).gap(4).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
         .child(svg("mods/mattermost/icons/info.svg").size(12)).child("Editing this message with an '@mention' will not notify the recipient.")))
       .child(h_flex().my(8).gap(8).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
@@ -1526,6 +1611,12 @@ export default class Mattermost extends View {
           m.mention_count++;
           m.mention_count_root = (m.mention_count_root ?? 0) + 1;
         }
+        return true;
+      }
+      case "ephemeral_message": {
+        const post = JSON.parse(data.post);
+        await this.ingest(cx, [post]);
+        (post.root_id ? this.threadPosts.get(post.root_id) : this.posts.get(post.channel_id))?.push(post);
         return true;
       }
       case "post_edited": {
@@ -1902,6 +1993,11 @@ export default class Mattermost extends View {
   // next builds everything, so a slow machine can't loop.
   renderPart(part, cx) {
     this.unfinished.add(part);
+    if (this.suggesters[part]) {
+      const list = this.suggesters[part].list(theme());
+      this.unfinished.delete(part);
+      return list;
+    }
     this.renderStart = Date.now();
     this.shortened = false;
     this.rowBudget = (this.shortRuns ?? 0) < 4;
@@ -2063,10 +2159,11 @@ export default class Mattermost extends View {
     return div().w(ICON_SLOT).flex_none().flex().items_center().justify_center().child(icon);
   }
 
-  channelMenu(c, box = null) {
+  channelMenu(c, box = null, mode = null) {
     const { count, mentions } = this.unread(c);
     this.openMenu({
       kind: box ? "header" : "channel",
+      mode,
       channel: { id: c.id, type: c.type, name: c.name, display: this.channelName(c), header: c.header ?? "", purpose: c.purpose ?? "" },
       cat: this.categoryOf(c.id) ?? this.categories[0],
       muted: this.muted(c),
@@ -2106,16 +2203,17 @@ export default class Mattermost extends View {
   }
 
   composer(t, input = this.input) {
-    const d = this.drafts.get(this.boxes.find((b) => b.input === input).key);
+    const box = this.boxes.find((b) => b.input === input);
+    const d = this.drafts.get(box.key);
     // Uploading isn't built, but a draft started in the web app can hold files, and they go with it.
     const files = d?.file_ids?.length ?? 0;
     return v_flex().flex_none()
       .when(Boolean(d?.message.includes("\n")), (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.muted).child("This draft has line breaks. Editing it in this one-line box removes them.")))
       .when(Boolean(this.error), (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.blocked).child(this.error)))
       .when(files > 0, (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.muted).child(`Sends with ${plural(files, "attachment", "attachments")} from this draft`)))
-      .child(div().id("composer").px(10).pb(10).pt(2)
-        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); })
-        .child(Input.new(input).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(13)));
+      .child(box.suggest.keys(div().id("composer"), 10).px(10).pb(10).pt(2)
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); box.suggest.moved(cx); })
+        .child(box.suggest.around(Input.new(input).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(13))));
   }
 
   // Rows are [key, build]. Every row scrolled past stays in the timeline, and building them all made
@@ -2169,18 +2267,19 @@ export default class Mattermost extends View {
 
   // Webhook posts show the name and icon they were sent with, as Mattermost does, not the account that posted them.
   authorName(p) {
-    return (fromWebhook(p) && p.props.override_username) || this.userName(p.user_id);
+    return (fromWebhook(p) && p.props.override_username) || (isEphemeral(p) ? "System" : this.userName(p.user_id));
   }
 
   isBot(p) {
-    return fromWebhook(p) || p.props?.from_bot === "true" || Boolean(this.users.get(p.user_id)?.is_bot);
+    return fromWebhook(p) || isEphemeral(p) || p.props?.from_bot === "true" || Boolean(this.users.get(p.user_id)?.is_bot);
   }
 
   authorKey(p) {
-    return fromWebhook(p) ? `hook:${p.props.override_username ?? ""}:${p.props.override_icon_url ?? ""}` : p.user_id;
+    return fromWebhook(p) ? `hook:${p.props.override_username ?? ""}:${p.props.override_icon_url ?? ""}` : isEphemeral(p) ? "system" : p.user_id;
   }
 
   postAvatar(p, size, t) {
+    if (isEphemeral(p) && !fromWebhook(p)) return image("mods/mattermost/icons/logo.svg").size(size).flex_none();
     if (fromWebhook(p) && p.props.override_icon_url) {
       const path = this.media.external(p.props.override_icon_url);
       if (path) return image(path).size(size).flex_none().rounded_full();
@@ -2767,7 +2866,7 @@ export default class Mattermost extends View {
       .when(Boolean(key), (el) => el.on_mouse_move(() => { this.moveOn ??= key; }));
     return row.children(isSystem(p) ? this.systemPost(p, t) : this.userPost(p, grouped, t, inThread, hovered, scope))
       .when(Boolean(date), (el) => el.child(this.dateLine(date, t)))
-      .when(hovered && !isSystem(p) && this.editing !== p.id, (el) => el.child(this.postActions(p, t, key, scope, date)));
+      .when(hovered && !isSystem(p) && !isEphemeral(p) && this.editing !== p.id, (el) => el.child(this.postActions(p, t, key, scope, date)));
   }
 
   // Mattermost's thread footer: who replied, latest first, the reply count, and following the thread.
@@ -2804,7 +2903,7 @@ export default class Mattermost extends View {
   userPost(p, grouped, t, inThread, hovered = false, scope = null) {
     const threadRoot = !inThread && (p.reply_count ?? 0) > 0;
     const time = inThread ? stamp(p.create_at) : clock(p.create_at);
-    const person = !fromWebhook(p);
+    const person = !fromWebhook(p) && !isEphemeral(p);
     const custom = person && !grouped ? liveStatus(this.users.get(p.user_id)?.custom) : null;
     // Mattermost's post avatar ring: 15px at right -3, bottom -4 of the 32px avatar, an 11px icon.
     const avatar = person ? this.withStatus(p.user_id, this.postAvatar(p, 32, t), 32, 15, 11, 20, t) : this.postAvatar(p, 32, t);
@@ -2827,6 +2926,7 @@ export default class Mattermost extends View {
         .children(postFiles(this, p, t, scope))
         .children(postAttachments(this, p, t, scope))
         .children(postEmbeds(this, p, t, scope))
+        .when(isEphemeral(p), (el) => el.child(div().text_size(12).text_color(alpha(t.foreground, 0.56)).child("(Only visible to you)")))
         .when((p.metadata?.reactions ?? []).length > 0, (el) => el.child(this.reactions(p, t, hovered)))
         .when(threadRoot, (el) => el.child(this.threadFooter(p, t, hovered))),
     ];

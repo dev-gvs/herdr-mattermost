@@ -36,7 +36,7 @@ export class Menu {
   constructor(view, spec = props().menu) {
     this.view = view;
     this.spec = spec;
-    this.mode = null;
+    this.mode = spec.mode ?? null;
     this.sub = null;
     this.error = null;
     this.found = [];
