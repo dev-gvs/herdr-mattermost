@@ -18,6 +18,9 @@ const LINE_COST = 30;
 // Each line costs a few regexes, and attachments are parsed during a render. A message longer than this isn't split.
 const MAX_LINES = 1000;
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
+const QUOTE = /^\s*>/;
+// A heading or a rule ends the paragraph above it; "---" and "===" also turn that paragraph into a heading.
+const NOT_TEXT = /^ {0,3}(?:#{1,6}(?:\s|$)|=+\s*$|-+\s*$|([-*_])(?:\s*\1){2,}\s*$)/;
 
 // Mattermost leaves code as typed, so every rewrite skips fenced blocks and inline spans.
 function outsideCode(text, fn) {
@@ -53,7 +56,8 @@ export function prepare(text, { emoji, mention, mine, highlight }) {
 // TextView reserves room for an image but never draws one, and it can't take custom emoji at all, so
 // those parts of a message are drawn outside it: { md } blocks, { image } blocks and { line } rows. Code and
 // tables stay whole, since splitting one would break it; an image in a table becomes a link instead.
-export function segments(text, ctx) {
+// In an edited message, the part that carries the Edited label beside it is marked `labelled`.
+export function segments(text, ctx, edited = false) {
   const out = [];
   let md = [];
   const flush = () => {
@@ -78,8 +82,32 @@ export function segments(text, ctx) {
       else md.push(piece);
     }
   });
+  if (edited && endsInParagraph(lines, whole)) {
+    while (md.length && !md.at(-1).trim()) md.pop();
+    if (md.length) {
+      // TextView can't hold the label, so the last line gets a block of its own for the label to sit beside.
+      const last = md.pop(), afterBlank = md.length > 0 && !md.at(-1).trim();
+      flush();
+      out.push({ md: prepare(last.trim(), ctx), labelled: true, gap: afterBlank && out.length > 0 });
+    } else if (out.at(-1)?.line) out.at(-1).labelled = true;
+  }
   flush();
   return out;
+}
+
+// Mattermost puts the Edited label on the last line only when the message ends in a paragraph. After a list,
+// quote, heading, rule, table or code block, it starts a line of its own.
+function endsInParagraph(lines, whole) {
+  let end = lines.length - 1;
+  while (end >= 0 && !lines[end].trim()) end--;
+  if (end < 0 || whole[end] || NOT_TEXT.test(lines[end])) return false;
+  let start = end;
+  for (; start >= 0 && lines[start].trim() && !whole[start] && !NOT_TEXT.test(lines[start]); start--) {
+    // A line without a marker of its own still continues the list item or quote above it.
+    if (LIST_ITEM.test(lines[start]) || QUOTE.test(lines[start])) return false;
+  }
+  // Text indented under a list item stays in that item even after a blank line.
+  return !/^\s/.test(lines[start + 1]) || !lines.slice(0, start + 1).some((line) => LIST_ITEM.test(line));
 }
 
 // Which lines markdown reads as code or a table, and so have to reach TextView as typed.

@@ -68,9 +68,9 @@ const add = (p) => { ENG.push(p); return p; };
 add(post("c-eng", "u-tom", daysAgo(1, 10, 2), "Heads up: the staging database moves to the new cluster tonight at 22:00. Expect ~10 minutes of read-only."));
 const migration = add(post("c-eng", "u-sam", daysAgo(1, 15, 40), "Migration plan for the payments service is up for review. The risky part is the backfill, so I split it into batches of 5k rows:\n\n```sql\nUPDATE payments SET currency = 'EUR'\nWHERE currency IS NULL AND id BETWEEN :from AND :to;\n```\n\nComments welcome before Thursday."));
 add(post("c-eng", "u-lena", daysAgo(1, 15, 52), "Looks good. Can we add a dry-run flag so QA can try it on a copy first?"));
-const release = add(post("c-eng", "u-ci", today(9, 12), "**Release 4.18.0** is out on both stores :rocket:\n\n- Faster cold start on Android\n- New onboarding flow\n- 14 fixes", { props: { from_bot: "true" } }));
+const release = add(post("c-eng", "u-ci", today(9, 12), "**Release 4.18.0** is out on both stores :rocket:\n\n- Faster cold start on Android\n- New onboarding flow\n- 14 fixes", { props: { from_bot: "true" }, edit_at: today(9, 20) }));
 const standup = add(post("c-eng", "u-priya", today(10, 21), "The new settings screens are ready in Figma. @alex could you check the empty states before we hand them over?"));
-add(post("c-eng", "u-marco", today(10, 34), "iOS build is green again, it was a stale cache on the runner."));
+add(post("c-eng", "u-marco", today(10, 34), "iOS build is green again, it was a stale cache on the runner.", { edit_at: today(10, 36) }));
 add(post("c-eng", "u-marco", today(10, 35), "Cleaned it up and pinned the Xcode version :white_check_mark:"));
 const lunch = add(post("c-eng", "u-jamie", today(11, 42), "Regression run finished: 412 passed, 0 failed. Ship it :tada:"));
 

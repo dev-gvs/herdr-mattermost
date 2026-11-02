@@ -90,6 +90,8 @@ const AVATAR_COL = 53;
 const AVATAR_INSET = 9;
 // Half the date label's height: the label is centered on the line between two posts.
 const DATE_HALF = 13;
+// TextView's own gap between paragraphs, for a message split into two blocks at a paragraph break.
+const PARAGRAPH_GAP = "0.75rem";
 // A category's channels start their icon under its name's first letter, so it reads which group they
 // belong to: the name follows the chevron's slot and a 6px gap, and a 14px icon sits 1px into its slot.
 const INDENT = ICON_SLOT + 6 - 1;
@@ -1147,8 +1149,8 @@ export default class Mattermost extends View {
   // so the messages about to be drawn are parsed before a redraw is asked for rather than during it.
   warm() {
     const posts = this.shownPosts() ?? [];
-    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!isSystem(p)) this.parsed(p.id, p.message ?? "");
-    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "");
+    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0);
+    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0);
   }
 
   shownPosts() {
@@ -2351,8 +2353,8 @@ export default class Mattermost extends View {
 
   // Turning a message into its parts is regex work that made up most of a render, so it is done once
   // per message text and redone only when the names or emoji it depends on change.
-  parsed(cacheKey, message) {
-    const key = `${this.textRev}:${message}`;
+  parsed(cacheKey, message, edited = false) {
+    const key = `${this.textRev}:${edited}:${message}`;
     let hit = this.parsedCache.get(cacheKey);
     if (hit?.key === key) return hit;
     // warm() runs this ahead of every redraw, so a message it can't handle comes out as plain text instead of
@@ -2360,7 +2362,7 @@ export default class Mattermost extends View {
     let big = null, parts;
     try {
       big = jumbo(message, this.text);
-      parts = big ? null : segments(message, this.text);
+      parts = big ? null : segments(message, this.text, edited);
     } catch {
       parts = [{ md: message }];
     }
@@ -2370,7 +2372,7 @@ export default class Mattermost extends View {
     return hit;
   }
 
-  emojiLine(key, line, t) {
+  emojiLine(key, line, t, label = null) {
     const scale = line.heading ? [0, 24, 20, 18, 16, 14, 14][line.heading] : 14;
     const words = line.tokens.map((tok, i) => {
       if (tok.space) return div().w(4).h(4).flex_none();
@@ -2384,18 +2386,33 @@ export default class Mattermost extends View {
     return h_flex().flex_wrap().items_center().min_h(20).my(2).pl(line.indent * 6).text_size(scale)
       .when(line.quote, (el) => el.pl(12).border_l_2().border_color(alpha(t.foreground, 0.2)))
       .when(Boolean(line.marker), (el) => el.child(div().w(18).flex_none().child(line.marker)))
-      .children(words);
+      .children(words)
+      .when(Boolean(label), (el) => el.child(div().w(4).h(4).flex_none()).child(label));
+  }
+
+  // Mattermost's indicator: a 12px pencil and 11px italic text at 75%, with when in its tooltip.
+  editedLabel(p, t) {
+    const when = fileTime(p.edit_at).replace(/^(Today|Yesterday)/, (word) => word.toLowerCase());
+    return h_flex().id(`edited-${p.id}`).flex_none().gap(2).items_center().text_size(11).text_color(alpha(t.foreground, 0.75))
+      .tooltip(`Edited ${when}`)
+      .child(svg("mods/mattermost/icons/pencil.svg").size(12))
+      .child(div().italic().child("Edited"));
   }
 
   richText(key, message, t, p, maxW) {
-    const { big, parts } = this.parsed(key, message);
-    if (big) return [h_flex().gap(4).py(2).children(big.map((tok) => this.emojiEl(tok, 32, t)))];
-    return parts.map((part, i) => {
+    const edited = p.edit_at > 0;
+    const { big, parts } = this.parsed(key, message, edited);
+    if (big) return [h_flex().gap(4).py(2).items_center().children(big.map((tok) => this.emojiEl(tok, 32, t))).when(edited, (el) => el.child(this.editedLabel(p, t)))];
+    const rows = parts.map((part, i) => {
       const id = i ? `${key}-${i}` : key;
-      if (part.line) return this.emojiLine(id, part.line, t);
+      if (part.line) return this.emojiLine(id, part.line, t, part.labelled ? this.editedLabel(p, t) : null);
       if (part.image) return div().py(2).child(remoteImage(this, id, part.image.url, p, { ...part.image, maxW }, t));
-      return TextView.markdown(`md-${id}`, part.md).selectable(true).on_link_click((url) => openLink(url));
+      const text = TextView.markdown(`md-${id}`, part.md).selectable(true).on_link_click((url) => openLink(url));
+      // A TextView in a row is as wide as its text, so the label follows the line, and wraps under it when the line fills the row.
+      return part.labelled ? h_flex().flex_wrap().items_center().gap_x(4).when(part.gap, (el) => el.mt(PARAGRAPH_GAP))
+        .child(div().max_w_full().child(text)).child(this.editedLabel(p, t)) : text;
     });
+    return edited && !parts.at(-1)?.labelled ? [...rows, h_flex().h(20).items_center().child(this.editedLabel(p, t))] : rows;
   }
 
   reactions(p, t, hovered) {
@@ -2516,8 +2533,7 @@ export default class Mattermost extends View {
           .when(Boolean(custom?.emoji), (el) => el.child(this.statusEmoji(`ps-${p.id}`, custom, 16, t).ml(-4)))
           .when(this.isBot(p), (el) => el.child(div().h(16).px(4).rounded(4).flex().items_center().bg(alpha(t.foreground, 0.08))
             .text_size(10).line_height("12px").font_semibold().text_color(t.foreground).child("BOT")))
-          .child(div().text_size(12).text_color(t.foreground).opacity(0.73).child(time))
-          .when(p.edit_at > 0, (el) => el.child(div().text_size(12).text_color(t.foreground).opacity(0.56).child("Edited")))))
+          .child(div().text_size(12).text_color(t.foreground).opacity(0.73).child(time))))
         .children(this.editing === p.id ? [this.editBox(p, t)] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
         .children(postFiles(this, p, t, scope))
         .children(postAttachments(this, p, t, scope))
