@@ -75,6 +75,22 @@ test/sandbox.sh stop
 - Tabs need a space, and the `demo` and `server` layouts have none. To test them: `herdr do layout.switch '{"name":"main"}'`, `herdr do space.new '{"name":"t"}'`, then `herdr do tab.new '{"name":"mm","mod":"mattermost","props":{"demo":true,"channel":"design"}}'`.
 - A fresh start shows an "Updated to x.y.z" toast at the bottom right until it's closed or Herdr restarts. It's only the new home, and no update ran.
 
+### Screenshots for the repo
+
+`preview.png` and `screenshots/` come from the sandbox's demo. Use only demo data, and leave `demo/demo.js` in the repo alone.
+
+```sh
+SCREEN_W=1450 SCREEN_H=905 test/sandbox.sh start demo
+test/sandbox.sh restart demo                       # Clears the "Updated to" toast.
+python3 test/frame_shot.py IN.png OUT.png          # Rounded corners and the unfocused border. Needs Pillow.
+```
+
+- Park the pointer with `at:1000,20` before each shot, except for a shot of something that needs hovering.
+- In the sandbox copy of `demo/demo.js`, delete the posts holding `Not your name` and `someone who can't notify`, which only exercise highlighting, and move the posts you want to the end of `DESIGN`.
+- To leave other channels unread, write a layout file in `/var/tmp/mmt/app/layouts/` like the `demo` one, with `"channel": "engineering"`, and switch to it instead of clicking through channels.
+- "Open in new tab" stays disabled until `test/sandbox.sh herdr do space.new '{"name":"t"}'`.
+- The caret blinks. Take the shot again if it shows.
+
 ### What this can't test
 
 Say so in your report when a change depends on one of these:

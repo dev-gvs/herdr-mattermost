@@ -6,8 +6,8 @@ set -u
 S=/var/tmp/mmt
 REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 BIN=$S/home/.local/bin
-SCREEN_W=1280
-SCREEN_H=820
+SCREEN_W=${SCREEN_W:-1280}
+SCREEN_H=${SCREEN_H:-820}
 
 # env -i leaves out the real session's socket, display and token, so nothing in here can reach the live window.
 sandboxed() {
