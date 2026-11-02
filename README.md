@@ -1,6 +1,6 @@
 # Mattermost for Herdr
 
-A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing and the post menu. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
+A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing, drafts and the post menu. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
 ![Mattermost in Herdr](preview.png)
 
@@ -38,6 +38,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 - `curl` reads the token from `~/.config/herdr-app/data/mattermost/private/curl.conf`, readable only by you. Delete it along with `mattermost.json` to log out.
 - Webhook icons, images in messages and link preview pictures from other hosts are downloaded without the token. Those hosts see your address, as they would in a browser.
 - Avatars, emoji, images and attachments are cached in `~/.config/herdr-app/data/mattermost/`. Files you open stay there for two weeks, and pictures from other hosts for 30 days.
+- Unsent drafts stay in `~/.config/herdr-app/data/mattermost/`, readable only by you. When your server allows synced drafts they also go to it, as the web app's do.
 - The mod runs `curl` for downloads, `xdg-open` for links and files, and `wl-copy` for Copy Link (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.

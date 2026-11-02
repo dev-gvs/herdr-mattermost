@@ -28,6 +28,7 @@ const PARSED = 800;
 // How long a part may spend building message rows before leaving the rest for the next render.
 const ROW_BUDGET = 35;
 const THREADS = "threads";
+const DRAFTS = "drafts";
 // Decoded frames of the animations played so far. Herdr keeps them until it quits, so past this they open in a player.
 const ANIMATION_BUDGET = 512 * 1024 * 1024;
 const UNKNOWN_ANIMATION = 64 * 1024 * 1024;
@@ -78,6 +79,13 @@ const lastPost = (c) => c.last_root_post_at || c.last_post_at || c.create_at;
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const replies = (n) => plural(n, "reply", "replies");
 const SHORTCODES = /:([a-z0-9_+\-]+):/gi;
+
+// Post ids and channel ids can't collide, so a thread or a channel names its one draft.
+const draftKey = (d) => d.root_id || d.channel_id;
+const draftEmpty = (d) => !d.message && !d.file_ids?.length;
+const oneLine = (text) => text.replace(/\r?\n/g, " ");
+// Files and priority come along, so saving a draft started in the web app doesn't strip them from it.
+const serverDraft = (s) => ({ ...pick(s, ["channel_id", "root_id", "message", "file_ids", "props", "priority", "update_at"]), remote: true });
 
 // The panel keeps only what it draws: the API's full objects are several times larger, and this
 // runtime slows down sharply as its heap grows.
@@ -318,6 +326,15 @@ export default class Mattermost extends View {
     this.input = InputState.new({ placeholder: "Message" });
     this.replyInput = InputState.new({ placeholder: "Reply to this thread..." });
     this.threadInput = InputState.new({ placeholder: "Reply to this thread..." });
+    // The boxes are reused, so `key` says whose draft each one holds right now; see bindDrafts.
+    this.boxes = [
+      { input: this.input, thread: false, key: null },
+      { input: this.replyInput, thread: true, key: null },
+      { input: this.threadInput, thread: true, key: null },
+    ];
+    this.drafts = this.readDrafts();
+    this.pushing = new Set();
+    this.draftAsk = null;
     // One edit box, reused for whichever post is being edited. Herdr's textarea inserts the newline
     // before reporting Enter, so a plain Enter saves the text as it was just before; Shift+Enter keeps it.
     this.editInput = TextareaState.new({ placeholder: "Edit the post..." });
@@ -331,18 +348,17 @@ export default class Mattermost extends View {
     // The side panel has no pane frame, so the mod draws one; its border follows the keyboard like a pane's.
     this.frame = Boolean(props()?.frame);
     this.focus = cx.focus_handle();
-    for (const input of [this.input, this.replyInput, this.threadInput]) {
-      input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
-      input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    for (const box of this.boxes) {
+      box.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+      box.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+      box.input.on("change", () => this.noteDraft(box));
+      box.input.on("submit", (_e, cx) => this.send(box, cx));
     }
-    this.input.on("submit", (_e, cx) => this.send(cx));
     this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
     this.tokenInput = InputState.new({ placeholder: "Paste the token" });
     this.tokenInput.set_masked(true);
     this.urlInput.on("submit", () => this.tokenInput.focus());
     this.tokenInput.on("submit", (_e, cx) => this.connectLogin(cx));
-    this.replyInput.on("submit", (_e, cx) => this.send(cx, this.replyInput, this.rhsThread));
-    this.threadInput.on("submit", (_e, cx) => this.send(cx, this.threadInput, this.thread));
 
     cx.timer.every(60e3, (cx) => cx.spawn(async (cx) => {
       if (!this.me) return;
@@ -362,6 +378,7 @@ export default class Mattermost extends View {
     cx.timer.every(1000, (cx) => {
       const t = theme(), look = `${t.background}${t.foreground}${t.accent}${t.border}`;
       this.publishBadge();
+      this.saveDrafts();
       if (look !== this.look) {
         if (this.look) this.redraw(cx);
         this.look = look;
@@ -470,6 +487,7 @@ export default class Mattermost extends View {
   redraw(cx) {
     cx.notify();
     if (this.sidePart) {
+      this.bindDrafts(cx);
       this.warm();
       cx.notify(this.sidePart);
       cx.notify(this.mainPart);
@@ -481,9 +499,10 @@ export default class Mattermost extends View {
       if (shared("mattermost.popup") === props().overlay) setShared("mattermost.popup", null);
       return;
     }
+    this.saveDrafts();
     OWNERS.delete(this.ownerKey);
     if (!props()?.demo && ![...OWNERS.values()].some((o) => !o.cfg?.demo)) setShared("mattermost.alive", null);
-    await this.ws?.close();
+    await Promise.allSettled([localStorage.flush(), this.ws?.close()]);
   }
 
   async api(cx, path, { method = "GET", body } = {}) {
@@ -568,7 +587,8 @@ export default class Mattermost extends View {
       this.saved = new Set(flagged.filter((x) => x.value === "true").map((x) => x.name));
     } catch {}
     const wanted = props()?.channel;
-    if (wanted && !this.selected) this.selected = wanted === THREADS ? THREADS : [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
+    if (wanted && !this.selected) this.selected = wanted === THREADS || wanted === DRAFTS ? wanted : [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
+    await this.loadDrafts(cx);
     if (props()?.thread && !this.thread) await this.openThread(props().thread, cx);
     if (this.selected === THREADS) await this.loadThreads(cx);
     else if (this.selected && this.channels.has(this.selected)) await this.open(this.selected, cx);
@@ -582,6 +602,7 @@ export default class Mattermost extends View {
     // Closed conversations stay members of their channel; Mattermost hides them by preference.
     const joinLeave = prefs.find((x) => x.category === "advanced_settings" && x.name === "join_leave")?.value;
     this.showJoinLeave = (joinLeave ?? this.clientConfig?.EnableJoinLeaveMessageByDefault ?? "true") === "true";
+    this.draftsSynced = this.clientConfig?.AllowSyncedDrafts === "true" && prefs.find((x) => x.category === "advanced_settings" && x.name === "sync_drafts")?.value !== "false";
     this.dmLimit = Number(prefs.find((x) => x.category === "sidebar_settings" && x.name === "limit_visible_dms_gms")?.value) || DM_LIMIT;
     // Mattermost's switcher takes a channel's last view as the latest of the member's last_viewed_at
     // and these two preferences, since the server moves last_viewed_at only when posts arrive.
@@ -954,6 +975,197 @@ export default class Mattermost extends View {
     this.threadInput.focus();
   }
 
+  openDrafts(cx) {
+    this.opening = null;
+    this.draftAsk = null;
+    this.select(DRAFTS);
+    this.redraw(cx);
+    cx.spawn(async (cx) => {
+      await this.ingestDrafts(cx);
+      this.redraw(cx);
+    });
+  }
+
+  // Mentions and custom emoji in a draft need the same lookups as a post's.
+  ingestDrafts(cx) {
+    return this.ingest(cx, this.filedDrafts().map((d) => ({ user_id: this.me.id, message: d.message })));
+  }
+
+  readDrafts() {
+    try {
+      // Whatever was still being typed when the panel last closed counts as left behind now.
+      return new Map(JSON.parse(localStorage.getItem(this.draftStore()) ?? "[]").map((d) => [draftKey(d), { ...d, typing: false }]));
+    } catch {
+      return new Map();
+    }
+  }
+
+  draftStore() {
+    return props()?.demo ? "demo-drafts" : "drafts";
+  }
+
+  // Writing holds every draft, so the second-long timer does it rather than each key press.
+  saveDrafts() {
+    if (!this.draftsTouched) return;
+    this.draftsTouched = false;
+    localStorage.setItem(this.draftStore(), JSON.stringify([...this.drafts.values()]));
+  }
+
+  // Mattermost files a draft when you leave it: until then it isn't counted or sent to the server.
+  filedDrafts() {
+    return [...this.drafts.values()].filter((d) => !d.typing && !draftEmpty(d) && this.channels.has(d.channel_id)).sort((a, b) => b.update_at - a.update_at);
+  }
+
+  // Every view change comes through redraw, so this is the one place a box's text follows what it shows.
+  bindDrafts(cx) {
+    const kind = this.mainKind();
+    const keys = [kind === "chat" ? this.selected : null, kind === "chat" && this.rhs === "thread" ? this.rhsThread : null, this.thread];
+    this.boxes.forEach((box, i) => {
+      if (box.key === keys[i]) return;
+      this.leaveDraft(box, cx);
+      this.fill(box, keys[i], this.drafts.get(keys[i])?.message ?? "");
+    });
+  }
+
+  // The box is one line and drops line breaks, so it holds a joined copy. `shown` tells that copy from
+  // an edit, so a draft written with several lines keeps them unless it's changed here.
+  fill(box, key, text) {
+    box.key = null;
+    box.input.set_value(oneLine(text));
+    box.shown = box.input.value();
+    box.key = key;
+  }
+
+  leaveDraft(box, cx) {
+    this.noteDraft(box);
+    const d = this.drafts.get(box.key);
+    if (!d) return;
+    d.typing = false;
+    this.draftsTouched = true;
+    this.pushDraft(box.key, cx);
+  }
+
+  noteDraft(box) {
+    if (!box.key) return;
+    const value = box.input.value(), message = value.trim() ? value : "";
+    if (value === box.shown) return;
+    const old = this.drafts.get(box.key);
+    const channel_id = old?.channel_id ?? (box.thread ? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key);
+    if (!channel_id) return;
+    box.shown = value;
+    if ((old?.message ?? "") === message) return;
+    const next = { ...old, channel_id, root_id: box.thread ? box.key : "", message, dirty: true, update_at: Date.now() };
+    next.typing = !draftEmpty(next) && (!old || draftEmpty(old) || Boolean(old.typing));
+    if (draftEmpty(next) && !old?.remote) this.drafts.delete(box.key);
+    else this.drafts.set(box.key, next);
+    this.draftsTouched = true;
+  }
+
+  // One request per draft at a time, so a slow save can't land after the delete that followed it.
+  // `remote` goes up before the save leaves: a delete issued while it's away still has to reach the server.
+  pushDraft(key, cx) {
+    if (!this.draftsSynced || this.pushing.has(key)) return;
+    this.pushing.add(key);
+    cx.spawn(async (cx) => {
+      try {
+        for (let d = this.drafts.get(key); d?.dirty && !d.typing; d = this.drafts.get(key)) {
+          const empty = draftEmpty(d);
+          if (empty) await this.api(cx, `/users/me/channels/${d.channel_id}/drafts${d.root_id ? `/${d.root_id}` : ""}`, { method: "DELETE" });
+          else {
+            d.remote = true;
+            await this.api(cx, "/drafts", { method: "POST", body: { channel_id: d.channel_id, root_id: d.root_id, message: d.message, file_ids: d.file_ids ?? [], props: d.props ?? {}, priority: d.priority } });
+          }
+          // Every edit replaces the entry, so a different one means this request is already out of date.
+          if (this.drafts.get(key) !== d) continue;
+          if (empty) this.drafts.delete(key);
+          else d.dirty = false;
+          this.draftsTouched = true;
+        }
+      } catch {
+        // It stays dirty, and the next load tries again.
+      } finally {
+        this.pushing.delete(key);
+      }
+    });
+  }
+
+  async loadDrafts(cx) {
+    if (this.draftsSynced) {
+      try {
+        const list = await this.api(cx, `/users/me/teams/${this.team.id}/drafts`);
+        const onServer = new Set(list.map(draftKey));
+        for (const key of [...this.drafts.keys()]) if (!onServer.has(key)) this.dropDraft(key);
+        for (const s of list) this.takeDraft(s);
+        for (const [key, d] of this.drafts) if (d.dirty && !d.typing) this.pushDraft(key, cx);
+      } catch {}
+    }
+    await this.ingestDrafts(cx);
+  }
+
+  // Text typed here and not yet saved outranks the server's, so nobody's typing gets replaced under them.
+  takeDraft(s) {
+    const key = draftKey(s), old = this.drafts.get(key);
+    if (old?.dirty) {
+      old.remote = true;
+      return;
+    }
+    this.drafts.set(key, serverDraft(s));
+    this.draftsTouched = true;
+    this.fillBox(key, s.message);
+  }
+
+  dropDraft(key) {
+    if (this.drafts.get(key)?.dirty) return;
+    if (this.drafts.delete(key)) this.draftsTouched = true;
+    this.fillBox(key, "");
+  }
+
+  fillBox(key, text) {
+    const box = this.boxes.find((b) => b.key === key);
+    if (box && box.shown !== oneLine(text)) this.fill(box, key, text);
+  }
+
+  clearDraft(key, cx) {
+    const d = this.drafts.get(key);
+    if (d?.remote) {
+      this.drafts.set(key, { ...d, message: "", file_ids: [], typing: false, dirty: true, update_at: Date.now() });
+      this.pushDraft(key, cx);
+    } else this.drafts.delete(key);
+    this.draftsTouched = true;
+    this.fillBox(key, "");
+  }
+
+  // A post the server refuses goes back to being a draft, ahead of anything typed since.
+  sendDraft(d, cx) {
+    const key = draftKey(d);
+    this.clearDraft(key, cx);
+    this.redraw(cx);
+    cx.spawn(async (cx) => {
+      try {
+        await this.api(cx, "/posts", { method: "POST", body: {
+          channel_id: d.channel_id, root_id: d.root_id, message: d.message.trim(), file_ids: d.file_ids ?? [], props: d.props ?? {},
+          ...(d.priority ? { metadata: { priority: d.priority } } : {}),
+        } });
+      } catch (e) {
+        const now = this.drafts.get(key), bound = this.boxes.some((b) => b.key === key);
+        const message = now?.message ? `${d.message} ${now.message}` : d.message;
+        this.drafts.set(key, { ...d, remote: Boolean(now?.remote || d.remote), message, typing: bound, dirty: true });
+        this.draftsTouched = true;
+        this.fillBox(key, message);
+        this.pushDraft(key, cx);
+        this.error = String(e?.message ?? e);
+        this.redraw(cx);
+      }
+    });
+  }
+
+  // Leaves the Drafts page for the conversation, whose box then holds the draft.
+  async editDraft(d, cx) {
+    this.draftAsk = null;
+    await this.open(d.channel_id, cx);
+    if (d.root_id) this.openReply(d.root_id, cx);
+  }
+
   async fetchThread(id, cx) {
     try {
       const page = await this.api(cx, `/posts/${id}/thread?collapsedThreads=true`);
@@ -1151,6 +1363,7 @@ export default class Mattermost extends View {
     const posts = this.shownPosts() ?? [];
     for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0);
     for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0);
+    if (this.selected === DRAFTS) for (const d of this.filedDrafts()) this.parsed(`draft-${draftKey(d)}`, d.message);
   }
 
   shownPosts() {
@@ -1232,21 +1445,10 @@ export default class Mattermost extends View {
     await this.api(cx, "/channels/members/me/view", { method: "POST", body: { channel_id: id } });
   }
 
-  send(cx, input = this.input, rootId = this.thread) {
-    const message = input.value().trim();
-    const root = rootId ? this.threadPosts.get(rootId)?.[0] : null;
-    const channel_id = root?.channel_id ?? this.selected;
-    if (!message || !channel_id || channel_id === THREADS) return;
-    input.set_value("");
-    cx.spawn(async (cx) => {
-      try {
-        await this.api(cx, "/posts", { method: "POST", body: { channel_id, message, ...(root ? { root_id: root.id } : {}) } });
-      } catch (e) {
-        input.set_value(message);
-        this.error = String(e?.message ?? e);
-        this.redraw(cx);
-      }
-    });
+  send(box, cx) {
+    this.noteDraft(box);
+    const d = this.drafts.get(box.key);
+    if (d && !draftEmpty(d)) this.sendDraft(d, cx);
   }
 
   connect(cx) {
@@ -1370,6 +1572,13 @@ export default class Mattermost extends View {
         if (ev.event === "thread_follow_changed") this.following.set(data.thread_id, Boolean(data.state));
         if (this.selected === THREADS && !this.thread) await this.loadThreads(cx);
         else await this.loadThreadTotals(cx);
+        return true;
+      case "draft_created":
+      case "draft_updated":
+        this.takeDraft(JSON.parse(data.draft));
+        return true;
+      case "draft_deleted":
+        this.dropDraft(draftKey(JSON.parse(data.draft)));
         return true;
       case "channel_created":
       case "direct_added":
@@ -1682,6 +1891,7 @@ export default class Mattermost extends View {
   mainKind() {
     if (this.thread) return "thread";
     if (this.selected === THREADS) return "threads";
+    if (this.selected === DRAFTS) return "drafts";
     return this.selected && this.channels.has(this.selected) ? "chat" : null;
   }
 
@@ -1718,6 +1928,7 @@ export default class Mattermost extends View {
       return this.threadView(t, wide, true);
     }
     if (kind === "threads") return this.threadsView(t, wide);
+    if (kind === "drafts") return this.draftsView(t, wide);
     if (kind === "chat") return this.chat(t, wide);
     return !wide ? div() : v_flex().flex_1().h_full().items_center().justify_center().text_color(t.dim)
       .child(this.error ?? (this.channels.size ? "Pick a channel" : ""));
@@ -1727,6 +1938,8 @@ export default class Mattermost extends View {
     const rows = this.sidebarRows();
     const { total_unread_threads: unreadThreads, total_unread_mentions: threadMentions } = this.threadTotals;
     const active = !this.opening && this.selected === THREADS;
+    const draftsActive = !this.opening && this.selected === DRAFTS;
+    const draftCount = this.filedDrafts().length;
     return v_flex().h_full().min_h(0).when(wide, (el) => el.size_full()).when(!wide, (el) => el.flex_1())
       // Same height as the main side's top bar, so the search box and the tabs share a center line.
       // A flat bar like the main side's top bar, sharing its height and bottom divider.
@@ -1744,6 +1957,14 @@ export default class Mattermost extends View {
         .child(this.slot(svg("mods/mattermost/icons/threads.svg").size(14).text_color(active || unreadThreads ? t.foreground : t.muted)))
         .child(div().flex_1().text_color(active || unreadThreads ? t.foreground : t.muted).when(unreadThreads > 0, (el) => el.font_semibold()).child("Threads"))
         .when(threadMentions > 0, (el) => el.child(this.badge(threadMentions, t)))))
+      // Mattermost lists Drafts only while there are some, or while its page is open.
+      .when(draftCount > 0 || this.selected === DRAFTS, (el) => el.child(div().pb(2).flex_none().child(h_flex().id("drafts").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
+        .when(draftsActive, (el) => el.bg(t.selected).child(this.activeBar(t))).hover((s) => s.bg(draftsActive ? t.selected : t.hover))
+        .on_click((_e, cx) => this.openDrafts(cx))
+        .child(this.slot(svg("mods/mattermost/icons/send.svg").size(14).text_color(draftsActive ? t.foreground : t.muted)))
+        .child(div().flex_1().text_color(draftsActive ? t.foreground : t.muted).child("Drafts"))
+        .when(draftCount > 0, (el) => el.child(h_flex().gap(4).items_center().text_size(12).text_color(t.muted)
+          .child(svg("mods/mattermost/icons/pencil.svg").size(12).text_color(t.muted)).child(String(draftCount)))))))
       .when(Boolean(this.error) && !this.channels.size, (el) => el.child(div().p(12).text_color(t.blocked).child(this.error)))
       .child(v_flex().id("channels").flex_1().min_h(0).overflow_y_scrollbar().pb(6)
         .children(rows.map((r) => (r.cat ? this.categoryRow(r, t) : this.channelRow(r.c, t, r.catMuted, r.grouped)))));
@@ -1885,8 +2106,13 @@ export default class Mattermost extends View {
   }
 
   composer(t, input = this.input) {
+    const d = this.drafts.get(this.boxes.find((b) => b.input === input).key);
+    // Uploading isn't built, but a draft started in the web app can hold files, and they go with it.
+    const files = d?.file_ids?.length ?? 0;
     return v_flex().flex_none()
+      .when(Boolean(d?.message.includes("\n")), (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.muted).child("This draft has line breaks. Editing it in this one-line box removes them.")))
       .when(Boolean(this.error), (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.blocked).child(this.error)))
+      .when(files > 0, (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.muted).child(`Sends with ${plural(files, "attachment", "attachments")} from this draft`)))
       .child(div().id("composer").px(10).pb(10).pt(2)
         .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); })
         .child(Input.new(input).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(13)));
@@ -2213,10 +2439,7 @@ export default class Mattermost extends View {
         .child(label)
         .when(dot, (el) => el.child(div().size(6).rounded(3).bg(t.accent)));
     };
-    const small = (id, label, primary, onClick) => div().id(id).px(8).py(3).rounded(6).cursor_pointer().text_size(12)
-      .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground)).when(!primary, (el) => el.text_color(t.muted))
-      .hover((s) => (primary ? s.opacity(0.88) : s.bg(t.hover).text_color(t.foreground)))
-      .on_click(onClick).child(label);
+    const small = (id, label, primary, onClick) => this.smallButton(id, label, primary, onClick, t);
     const empty = this.threadTab === "unread"
       ? ["No unread threads", "You're all caught up"]
       : ["No followed threads", "Threads you start, reply to or follow will show here"];
@@ -2242,6 +2465,72 @@ export default class Mattermost extends View {
           : v_flex().id(`threads-${this.threadTab}`).flex_1().min_h(0).overflow_y_scrollbar()
             .children(list.map((th) => this.threadCard(th, t))))
       .when(Boolean(this.error), (el) => el.child(div().px(14).py(6).text_size(12).text_color(t.blocked).child(this.error)));
+  }
+
+  smallButton(id, label, primary, onClick, t) {
+    return div().id(id).px(8).py(3).rounded(6).cursor_pointer().text_size(12)
+      .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground)).when(!primary, (el) => el.text_color(t.muted))
+      .hover((s) => (primary ? s.opacity(0.88) : s.bg(t.hover).text_color(t.foreground)))
+      .on_click(onClick).child(label);
+  }
+
+  draftsView(t, wide) {
+    const list = this.filedDrafts();
+    return v_flex().flex_1().min_w(0).h_full()
+      .child(this.topBar(t, wide, !wide && (() => { this.selected = null; localStorage.removeItem("selected"); }),
+        div().flex_none().font_semibold().text_size(15).child("Drafts"),
+        div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child("Any messages you've started will show here")))
+      .child(list.length
+        ? v_flex().id("draft-list").flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(12).children(list.map((d) => this.draftCard(d, t)))
+        : v_flex().flex_1().items_center().justify_center().gap(8).px(20)
+          .child(div().text_size(17).font_semibold().text_color(t.foreground).child("No drafts at the moment"))
+          .child(div().text_size(13).text_color(t.muted).child("Any messages you've started will show here.")))
+      .when(Boolean(this.error), (el) => el.child(div().px(14).py(6).text_size(12).text_color(t.blocked).child(this.error)));
+  }
+
+  draftCard(d, t) {
+    const key = draftKey(d), c = this.channels.get(d.channel_id);
+    const direct = c.type === "D" || c.type === "G";
+    const where = d.root_id ? `Thread ${direct ? "to" : "in"}:` : direct ? "To:" : "In:";
+    const files = d.file_ids?.length ?? 0;
+    const asking = this.draftAsk?.key === key ? this.draftAsk.action : null;
+    const answer = (cx, run) => { this.draftAsk = null; run?.(); this.redraw(cx); };
+    const action = (icon, tip, color, run) => div().id(`dr-${icon}-${key}`).size(28).flex().items_center().justify_center().rounded(4).cursor_pointer()
+      .text_color(color).hover((s) => s.bg(alpha(t.foreground, 0.08)))
+      .tooltip(tip)
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); run(cx); })
+      .child(svg(`mods/mattermost/icons/${icon}.svg`).size(16).text_color(color));
+    const ask = (name) => (cx) => { this.draftAsk = { key, action: name }; this.redraw(cx); };
+    const confirm = h_flex().id(`dr-ask-${key}`).flex_none().gap(6).items_center()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(div().child(asking === "delete" ? "Delete this draft?" : "Send this message now?"))
+      .child(this.smallButton(`dr-no-${key}`, "Cancel", false, (_e, cx) => answer(cx), t))
+      .child(this.smallButton(`dr-yes-${key}`, asking === "delete" ? "Delete" : "Send", true, (_e, cx) => answer(cx, () => (asking === "delete" ? this.clearDraft(key, cx) : this.sendDraft(this.drafts.get(key), cx))), t));
+    return v_flex().id(`dr-${key}`).relative().flex_none().rounded(4).border_1().border_color(t.border).overflow_hidden().cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => cx.spawn(async (cx) => this.editDraft(d, cx)))
+      .child(h_flex().h(36).flex_none().px(14).gap(6).items_center().border_b(1).border_color(t.border).bg(t.background).text_size(12).text_color(t.muted)
+        .child(div().flex_none().child(where))
+        .child(this.slot(this.channelIcon(c, t.muted, t)))
+        .child(div().min_w(0).truncate().text_color(t.foreground).child(this.channelName(c)))
+        .child(div().flex_1())
+        .when(Boolean(asking), (el) => el.child(confirm))
+        .when(!asking, (el) => el
+          .child(div().flex_none().child(Date.now() - d.update_at < 60e3 ? "now" : ago(d.update_at)))
+          .child(div().h(16).px(4).flex_none().flex().items_center().rounded(4).bg(t.blocked).text_size(10).line_height("12px").font_semibold().text_color("#ffffff").child("DRAFT"))))
+      .child(h_flex().px(14).py(10).gap(10).items_start().max_h(240).overflow_hidden()
+        .child(this.withStatus(this.me.id, this.avatar(this.me.id, 32, t), 32, 15, 11, 20, t))
+        .child(v_flex().flex_1().min_w(0).text_size(14)
+          .child(div().mb(2).font_semibold().child(this.userName(this.me.id)))
+          .children(this.richText(`draft-${key}`, d.message, t, { metadata: {} }, this.contentWidth("c")))
+          .when(files > 0, (el) => el.child(div().pt(2).text_size(12).text_color(t.muted).child(plural(files, "attachment", "attachments"))))))
+      // Over the time and the tag on hover, by a layer the card's own hover can't do for a child.
+      .when(!asking, (el) => el.child(div().absolute().inset_0().opacity(0).hover((s) => s.opacity(1))
+        // Wide enough to cover the longest time label and the tag.
+        .child(h_flex().absolute().top(0).right(0).w(170).h(35).pr(10).gap(2).items_center().justify_end().bg(t.background)
+          .child(action("trash", "Delete draft", t.blocked, ask("delete")))
+          .child(action("pencil", "Edit draft", t.muted, (cx) => cx.spawn(async (cx) => this.editDraft(d, cx))))
+          .child(action("send", "Send draft", t.muted, ask("send"))))));
   }
 
   preview(text) {

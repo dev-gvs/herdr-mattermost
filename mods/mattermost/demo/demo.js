@@ -124,6 +124,12 @@ const OTHER = {
   "c-gm": [post("c-gm", "u-jamie", today(9, 50), "Bug bash at 15:00, bring snacks")],
 };
 
+const DRAFTS = [
+  { channel_id: "c-design", root_id: "", message: "Can we keep the **old tokens** until the release is out?", update_at: NOW - 3 * MIN },
+  { channel_id: "c-eng", root_id: migration.id, message: "I can take the backfill on Thursday.", update_at: NOW - 2 * HOUR },
+  { channel_id: "c-dm-sam", root_id: "", message: "After lunch works, I'll grab a room.", update_at: NOW - 2 * DAY },
+];
+
 const page = (posts) => ({ order: [...posts].reverse().map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) });
 const postsOf = (id) => (id === "c-eng" ? ENG : OTHER[id] ?? []);
 const findPost = (id) => [...ENG, ...Object.values(OTHER).flat(), ...Object.values(REPLIES).flat()].find((p) => p.id === id);
@@ -144,7 +150,8 @@ export async function demoApi(path, method, body) {
   let m;
   if (route === "/users/me") return USERS[0];
   if (route === "/users/me/teams") return [TEAM];
-  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false" };
+  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true" };
+  if (route === `/users/me/teams/${TEAM.id}/drafts`) return DRAFTS;
   if (route === "/users/me/preferences/flagged_post") return [{ category: "flagged_post", name: release.id, value: "true" }];
   if (route === "/users/me/preferences") return CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" }));
   if (route === `/users/me/teams/${TEAM.id}/channels`) return CHANNELS;
