@@ -1,4 +1,5 @@
 // Mattermost message text, turned into what the panel draws.
+import { NO_KEYS, hasKey, keyRanges } from "./highlight.js";
 
 const SHORTCODE = /:([a-z0-9_+\-]+):/gi;
 // The lookbehind keeps addresses inside URLs and emails ("/@x", "a@b") from reading as mentions.
@@ -22,6 +23,11 @@ const QUOTE = /^\s*>/;
 // A heading or a rule ends the paragraph above it; "---" and "===" also turn that paragraph into a heading.
 const NOT_TEXT = /^ {0,3}(?:#{1,6}(?:\s|$)|=+\s*$|-+\s*$|([-*_])(?:\s*\1){2,}\s*$)/;
 
+// What wholeLines says of a table row: whole, but with text in its cells.
+const TABLE = "table";
+// What opens a line of markdown and isn't its text: a key doesn't light up the 1 of "1. Spacing".
+const BLOCK_PREFIX = /^\s*(?:(?:>|#{1,6}\s|[-*+]\s|\d+[.)]\s|\[[ xX]\]\s)\s*)*/;
+
 // Mattermost leaves code as typed, so every rewrite skips fenced blocks and inline spans.
 function outsideCode(text, fn) {
   return text.split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((part, i) => (i % 2 ? part : fn(part))).join("");
@@ -36,18 +42,36 @@ export function mentionNames(text) {
   return [...names].filter((n) => !SPECIAL.has(n));
 }
 
+// Lights up what `scope` holds with TextView's inline <mark>, the only highlight it has. The mention links are made
+// later and land inside. Code keeps its text as typed, so it never gets a tag.
+function marked(text, ctx, scope) {
+  if (!hasKey(text, scope)) return text;
+  const lines = text.split("\n");
+  if (lines.length > MAX_LINES) return text;
+  const whole = wholeLines(lines);
+  const open = `<mark color="${ctx.highlight()}">`;
+  return lines.map((line, i) => {
+    if (whole[i] === true || !hasKey(line, scope)) return line;
+    const start = BLOCK_PREFIX.exec(line)[0].length;
+    let out = line.slice(0, start), at = start;
+    for (const { from, to } of keyRanges(line.slice(start), scope, ctx)) {
+      out += `${line.slice(at, start + from)}${open}${line.slice(start + from, start + to)}</mark>`;
+      at = start + to;
+    }
+    return out + line.slice(at);
+  }).join("\n");
+}
+
 // Markdown for TextView: standard emoji as characters, mentions as links, and single newlines kept,
-// since Mattermost breaks lines where CommonMark would join them. Mentions that notify you are
-// highlighted as Mattermost does, with TextView's inline <mark>.
-export function prepare(text, { emoji, mention, mine, highlight }) {
-  const inline = outsideCode(text, (part) => (fewImages(part) ? part.replace(IMAGE, (_whole, alt, url) => `[${alt || "image"}](${url})`) : part)
+// since Mattermost breaks lines where CommonMark would join them.
+export function prepare(text, ctx, scope = ctx.textKeys()) {
+  const { emoji, mention } = ctx;
+  const inline = outsideCode(marked(text, ctx, scope), (part) => (fewImages(part) ? part.replace(IMAGE, (_whole, alt, url) => `[${alt || "image"}](${url})`) : part)
     .replace(SHORTCODE, (whole, name) => emoji[name.toLowerCase()] ?? whole)
     .replace(MENTION, (whole, before, name) => {
-      const bare = name.replace(/\.$/, "");
-      const label = mention(bare);
+      const label = mention(name.replace(/\.$/, ""));
       if (!label) return whole;
-      const link = `[@${label}](mention:${name})`;
-      return `${before}${mine?.(bare) ? `<mark color="${highlight()}">${link}</mark>` : link}${name.endsWith(".") ? "." : ""}`;
+      return `${before}[@${label}](mention:${name})${name.endsWith(".") ? "." : ""}`;
     }));
   // Inline code spans sit inside a line, so only fenced blocks are kept out of the line-break pass.
   return inline.split(/(```[\s\S]*?```)/g).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?=[^\n])/g, "$1  \n"))).join("");
@@ -57,13 +81,13 @@ export function prepare(text, { emoji, mention, mine, highlight }) {
 // those parts of a message are drawn outside it: { md } blocks, { image } blocks and { line } rows. Code and
 // tables stay whole, since splitting one would break it; an image in a table becomes a link instead.
 // In an edited message, the part that carries the Edited label beside it is marked `labelled`.
-export function segments(text, ctx, edited = false) {
+export function segments(text, ctx, edited = false, scope = NO_KEYS) {
   const out = [];
   let md = [];
   const flush = () => {
     const body = md.join("\n").replace(/^\n+/, "").trimEnd();
     md = [];
-    if (body) out.push({ md: prepare(body, ctx) });
+    if (body) out.push({ md: prepare(body, ctx, scope) });
   };
   const lines = text.split(/\r?\n/);
   if (lines.length > MAX_LINES) {
@@ -78,7 +102,7 @@ export function segments(text, ctx, edited = false) {
     if (whole[i]) { md.push(line); return; }
     for (const piece of images && line.includes("![") ? pieces(line) : [line]) {
       if (piece.image) { flush(); out.push(piece); }
-      else if (piece.length <= room && piece.includes(":") && hasCustom(piece, ctx)) { room -= piece.length + LINE_COST; flush(); out.push({ line: inlineLine(piece, ctx) }); }
+      else if (piece.length <= room && piece.includes(":") && hasCustom(piece, ctx)) { room -= piece.length + LINE_COST; flush(); out.push({ line: inlineLine(piece, ctx, scope) }); }
       else md.push(piece);
     }
   });
@@ -88,7 +112,7 @@ export function segments(text, ctx, edited = false) {
       // TextView can't hold the label, so the last line gets a block of its own for the label to sit beside.
       const last = md.pop(), afterBlank = md.length > 0 && !md.at(-1).trim();
       flush();
-      out.push({ md: prepare(last.trim(), ctx), labelled: true, gap: afterBlank && out.length > 0 });
+      out.push({ md: prepare(last.trim(), ctx, scope), labelled: true, gap: afterBlank && out.length > 0 });
     } else if (out.at(-1)?.line) out.at(-1).labelled = true;
   }
   flush();
@@ -128,7 +152,7 @@ function wholeLines(lines) {
       const next = lines[i + 1] ?? "";
       table = next.includes("|") && next.includes("-") && /^[\s|:-]+$/.test(next);
     }
-    if (table || /^\s*\|/.test(line)) return true;
+    if (table || /^\s*\|/.test(line)) return TABLE;
     const indented = /^(?: {4}|\t)/.test(line);
     // Indentation under a list item continues the item, and right under a paragraph continues the paragraph.
     code = indented && !list && (code || afterBlank);
@@ -163,20 +187,35 @@ const hasCustom = (text, { custom }) => {
 
 const INLINE = /`([^`]+)`|\[([^\]]+)\]\(((?:[^\s()]|\([^\s()]*\))+)[^)]*\)|(\*\*\*|\*\*|__|~~|\*(?=\S)|(?<=\S)\*|(?<![a-z0-9])_(?=\S)|(?<=\S)_(?![a-z0-9]))|:([a-z0-9_+\-]+):|(https?:\/\/[^\s<>]+)|(?<![a-z0-9/])@([a-z0-9][a-z0-9._\-]*[a-z0-9_]|[a-z0-9])|(\s+)/gi;
 
-// One line of markdown as styled words, for the lines that hold a custom emoji.
-function inlineLine(text, { emoji, custom, mention, mine }) {
+// One line of markdown as styled words, for the lines that hold a custom emoji. `lit` is on what a key lights up.
+function inlineLine(text, ctx, scope) {
+  const { emoji, custom, mention } = ctx;
   const [, indent, prefix = "", body] = text.match(/^(\s*)(#{1,6}\s+|(?:>\s*)+|[-*+]\s+|\d+[.)]\s+)?([\s\S]*)$/);
+  const ranges = hasKey(body, scope) ? keyRanges(body, scope, ctx) : [];
+  const lit = (from, to) => ranges.some((r) => r.from < to && from < r.to);
   const style = { bold: false, italic: false, strike: false };
   const tokens = [];
   const add = (token) => tokens.push({ ...style, ...token });
+  // A key can end in the middle of a word, so plain text is cut where a range starts and ends.
+  const addText = (from, to, extra) => {
+    let at = from;
+    for (const r of ranges) {
+      if (r.to <= at || r.from >= to) continue;
+      if (r.from > at) add({ ...extra, text: body.slice(at, r.from) });
+      const end = Math.min(r.to, to);
+      add({ ...extra, text: body.slice(Math.max(r.from, at), end), lit: true });
+      at = end;
+    }
+    if (at < to) add({ ...extra, text: body.slice(at, to) });
+  };
   let at = 0;
   INLINE.lastIndex = 0;
   for (let m; (m = INLINE.exec(body)); ) {
-    if (m.index > at) add({ text: body.slice(at, m.index) });
+    if (m.index > at) addText(at, m.index);
     at = m.index + m[0].length;
-    const [whole, code, label, url, mark, name, bare, who, space] = m;
+    const [, code, label, url, mark, name, bare, who, space] = m;
     if (code) add({ text: code, code: true });
-    else if (label) add({ text: label, link: url });
+    else if (label) addText(m.index + 1, m.index + 1 + label.length, { link: url });
     else if (mark) {
       if (mark.startsWith("~")) style.strike = !style.strike;
       else {
@@ -185,15 +224,17 @@ function inlineLine(text, { emoji, custom, mention, mine }) {
       }
     } else if (name) {
       const n = name.toLowerCase();
-      add(custom(n) ? { custom: n } : emoji[n] ? { emoji: emoji[n] } : { text: whole });
+      if (custom(n)) add({ custom: n, lit: lit(m.index, at) });
+      else if (emoji[n]) add({ emoji: emoji[n], lit: lit(m.index, at) });
+      else addText(m.index, at);
     } else if (bare) add({ text: bare, link: bare });
     else if (who) {
-      const person = who.replace(/\.$/, "");
-      const shown = mention(person);
-      add(shown ? { mention: `@${shown}`, mine: Boolean(mine?.(person)) } : { text: whole });
-    } else if (space) tokens.push({ space: true });
+      const shown = mention(who.replace(/\.$/, ""));
+      if (shown) add({ mention: `@${shown}`, lit: lit(m.index, at) });
+      else addText(m.index, at);
+    } else if (space) tokens.push({ space: true, lit: lit(m.index, at) });
   }
-  if (at < body.length) add({ text: body.slice(at) });
+  if (at < body.length) addText(at, body.length);
   const trimmed = prefix.trim();
   return {
     tokens,

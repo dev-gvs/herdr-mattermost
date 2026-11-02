@@ -1,9 +1,10 @@
 // Mattermost's emoji picker, drawn by a popup copy of this mod: search, category tabs, recently used
 // (the server's recent_emojis preference, named by the user's id and shared with the official apps), every standard emoji and the
-// server's custom ones. Picking one reacts to the post; the panel sees it in the reaction_added event.
+// server's custom ones. Picking one reacts to the post, and the panel sees it in the reaction_added event; opened from
+// the status dialog, it hands the emoji back through shared state.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, closeOverlay, theme, exec, readTextFile, appHome } from "herdr";
+import { props, closeOverlay, theme, exec, readTextFile, appHome, setShared } from "herdr";
 import { FONT, alpha } from "../main.js";
 import { Media } from "./media.js";
 
@@ -115,7 +116,11 @@ export class EmojiPicker {
   }
 
   pick(e, cx) {
-    const { me, post } = this.spec;
+    const { me, post, status } = this.spec;
+    if (status) {
+      setShared("mattermost.status-emoji", { id: `${Date.now()}-${Math.random()}`, name: e.name, char: e.char ?? "", path: this.glyphPath(e) });
+      return this.close();
+    }
     cx.spawn(async (cx) => {
       try {
         await this.view.api(cx, "/reactions", { method: "POST", body: { user_id: me, post_id: post, emoji_name: e.name } });
@@ -133,8 +138,12 @@ export class EmojiPicker {
     });
   }
 
+  glyphPath(e) {
+    return e.id ? this.media.emoji(e.id) : this.view.cfg ? this.media.standard(this.view.cfg.url, e.char) : null;
+  }
+
   glyph(e, size) {
-    const path = e.id ? this.media.emoji(e.id) : this.view.cfg ? this.media.standard(this.view.cfg.url, e.char) : null;
+    const path = this.glyphPath(e);
     return path ? image(path).size(size).flex_none() : div().text_size(Math.round(size * 0.85)).child(e.char ?? "");
   }
 

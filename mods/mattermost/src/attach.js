@@ -3,6 +3,7 @@ import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { alpha, fileSize, openLink } from "../main.js";
 import { MAX_PIXELS } from "./media.js";
+import { imageName } from "./image.js";
 
 // Mattermost's limit for an image in the timeline; several in one post share the row at a smaller size.
 const MAX_H = 350;
@@ -70,14 +71,27 @@ function videoCard(view, f, t, maxW, maxH) {
       .child(view.fileState.get(f.id) ?? `${f.name ?? "Video"} • ${fileSize(f.size ?? 0)}`));
 }
 
-function pictureFile(view, f, t, maxW, maxH) {
+const withImageMenu = (el, view, picture) => el.on_mouse_down("right", (e, cx) => { cx.stop_propagation(); view.openImageMenu(picture, e.position); });
+
+const fileImage = (view, f) => ({
+  file: { id: f.id, name: f.name, extension: f.extension, mime_type: f.mime_type },
+  name: f.name, path: view.media.preview(f.id), w: f.width, h: f.height,
+});
+
+// Going through a post's files stops at its pictures: other files open in their own apps here, and a GIF plays in place.
+function openPicture(view, p, f) {
+  const pictures = (p.metadata?.files ?? []).filter((x) => isPicture(x) && !isGif(x)).map((x) => fileImage(view, x)).filter((x) => x.path);
+  view.openLightbox(p, pictures, pictures.findIndex((x) => x.file.id === f.id));
+}
+
+function pictureFile(view, f, p, t, maxW, maxH) {
   const box = fit(f.width || DEFAULT_W, f.height || DEFAULT_H, maxW, maxH);
   const still = view.media.preview(f.id);
   if (isGif(f)) {
-    return div().mt(4).child(animation(view, f.id, still, box, t, (cx) => view.playFileAnimation(f, cx)));
+    return div().mt(4).child(withImageMenu(animation(view, f.id, still, box, t, (cx) => view.playFileAnimation(f, cx)), view, fileImage(view, f)));
   }
-  return div().mt(4).child(frame(`pic-${f.id}`, box, t).cursor_pointer()
-    .on_click(() => still && view.openLightbox({ path: still, name: f.name, w: f.width, h: f.height, file: f }))
+  return div().mt(4).child(withImageMenu(frame(`pic-${f.id}`, box, t).cursor_pointer(), view, fileImage(view, f))
+    .on_click(() => still && openPicture(view, p, f))
     .when(Boolean(still), (el) => el.child(image(still).size_full())));
 }
 
@@ -89,7 +103,7 @@ export function postFiles(view, p, t, scope) {
   const maxW = view.contentWidth(scope);
   const many = pictures.length > 1;
   const w = many ? Math.min(MANY_W, maxW) : maxW, h = many ? MANY_H : MAX_H;
-  const drawn = pictures.map((f) => (isVideo(f) ? videoCard(view, f, t, w, h) : pictureFile(view, f, t, w, h)));
+  const drawn = pictures.map((f) => (isVideo(f) ? videoCard(view, f, t, w, h) : pictureFile(view, f, p, t, w, h)));
   return [
     ...(drawn.length ? [h_flex().flex_wrap().gap(8).children(drawn)] : []),
     ...others.map((f) => fileRow(view, f, t)),
@@ -104,13 +118,14 @@ export function remoteImage(view, key, url, p, { w, h, link, maxW }, t) {
   const declared = meta?.width * meta?.height > MAX_PIXELS;
   const rel = declared ? null : view.media.remote(url);
   const huge = declared || Boolean(rel && view.media.oversized(rel));
+  const picture = { url, rel, name: imageName(url), path: rel, w: meta?.width, h: meta?.height };
   if (rel && !huge && isAnimated(view, url, rel, meta)) {
-    return animation(view, key, view.media.still(rel), box, t, (cx) => view.playRemoteAnimation(key, rel, cx));
+    return withImageMenu(animation(view, key, view.media.still(rel), box, t, (cx) => view.playRemoteAnimation(key, rel, cx)), view, picture);
   }
   return frame(`img-${key}`, box, t).cursor_pointer()
-    .on_click(() => (link || huge ? openLink(link ?? url) : rel && view.openLightbox({ path: rel, name: url.split("/").pop(), w: meta?.width, h: meta?.height, url })))
+    .on_click(() => (link || huge ? openLink(link ?? url) : rel && view.openLightbox(p, [picture], 0)))
     .when(huge, (el) => el.child("Too large to show here"))
-    .when(Boolean(rel) && !huge, (el) => el.child(image(rel).size_full()));
+    .when(Boolean(rel) && !huge, (el) => withImageMenu(el, view, picture).child(image(rel).size_full()));
 }
 
 // For pictures too small to offer a play button: an animation stays on its first frame.
@@ -118,6 +133,11 @@ function smallPicture(view, url) {
   const rel = url && view.media.remote(url);
   if (!rel || view.media.oversized(rel)) return null;
   return isAnimated(view, url, rel) ? view.media.still(rel) : rel;
+}
+
+function thumbnail(view, key, url, path) {
+  return withImageMenu(div().id(`${key}-thumb`).size(THUMB).flex_none(), view, { url, rel: view.media.remote(url), name: imageName(url), path })
+    .child(image(path).size_full().rounded(4));
 }
 
 function card(color, t, children) {
@@ -154,17 +174,17 @@ export function postAttachments(view, p, t, scope) {
     if (a.author_name) parts.push(a.author_link ? linkText(`${key}-author`, clip(a.author_name), a.author_link, t, 12) : small(a.author_icon, clip(a.author_name), view, t));
     if (a.title) parts.push(linkText(`${key}-title`, clip(a.title), a.title_link, t));
     const thumb = smallPicture(view, a.thumb_url);
-    const text = a.text ? view.richText(key, clip(a.text), t, p, maxW - (a.thumb_url ? THUMB + 12 : 0)) : null;
+    const text = a.text ? view.richText(key, clip(a.text), t, p, maxW - (a.thumb_url ? THUMB + 12 : 0), view.keys.forText()) : null;
     if (text || thumb) {
       parts.push(h_flex().items_start().gap(12)
         .child(v_flex().flex_1().min_w(0).children(text ?? []))
-        .when(Boolean(thumb), (el) => el.child(image(thumb).size(THUMB).flex_none().rounded(4))));
+        .when(Boolean(thumb), (el) => el.child(thumbnail(view, key, a.thumb_url, thumb))));
     }
     const fields = (a.fields ?? []).slice(0, MAX_FIELDS).filter((f) => f.title || f.value);
     if (fields.length) parts.push(attachmentFields(view, key, fields, t, p, maxW, clip));
     if (a.image_url) parts.push(remoteImage(view, `${key}-image`, a.image_url, p, { maxW }, t));
     if (a.footer) parts.push(small(a.footer_icon, clip(a.footer), view, t));
-    const pretext = a.pretext ? view.richText(`${key}-pre`, clip(a.pretext), t, p, maxW) : [];
+    const pretext = a.pretext ? view.richText(`${key}-pre`, clip(a.pretext), t, p, maxW, view.keys.forText()) : [];
     return [...pretext, card(barColor(a.color, t), t, parts)];
   });
 }
@@ -179,7 +199,7 @@ function attachmentFields(view, key, fields, t, p, maxW, clip) {
   }
   return v_flex().gap(8).children(rows.map((row, r) => h_flex().items_start().gap(12).children(row.map((f, c) => v_flex().flex_1().min_w(0)
     .child(div().text_size(12).font_semibold().text_color(t.muted).child(clip(f.title)))
-    .children(view.richText(`${key}-f${r}-${c}`, clip(f.value), t, p, maxW / row.length))))));
+    .children(view.richText(`${key}-f${r}-${c}`, clip(f.value), t, p, maxW / row.length, view.keys.forText()))))));
 }
 
 // Link previews, images linked in a message and quoted posts, which the server works out and sends along.
@@ -207,7 +227,7 @@ function linkPreview(view, key, e, t, p, maxW) {
       .child(v_flex().flex_1().min_w(0).gap(4)
         .when(Boolean(title), (el) => el.child(linkText(`${key}-title`, title, e.url, t)))
         .when(Boolean(description), (el) => el.child(div().text_size(13).text_color(t.foreground).child(description))))
-      .when(Boolean(thumb), (el) => el.child(image(thumb).size(THUMB).flex_none().rounded(4))),
+      .when(Boolean(thumb), (el) => el.child(thumbnail(view, key, url, thumb))),
     ...(url && large ? [remoteImage(view, `${key}-image`, url, p, { maxW }, t)] : []),
   ])];
 }
@@ -218,7 +238,7 @@ function quotedPost(view, key, data, t, p, maxW) {
   const where = data.channel_display_name ? `Originally posted in ~${data.channel_display_name}` : "Originally posted";
   return [card(alpha(t.foreground, 0.2), t, [
     h_flex().gap(8).items_center().child(view.avatar(quoted.user_id, 20, t)).child(div().font_semibold().child(view.userName(quoted.user_id))),
-    ...view.richText(key, quoted.message ?? "", t, p, maxW),
+    ...view.richText(key, quoted.message ?? "", t, p, maxW, view.keys.forPost(quoted)),
     div().id(`${key}-link`).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.accent))
       .on_click(() => openLink(`${view.cfg.url}/${data.team_name ?? view.team.name}/pl/${quoted.id}`)).child(where),
   ])];

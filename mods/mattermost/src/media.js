@@ -19,7 +19,8 @@ const MAX_NAME = 200;
 const WEB_URL = /^https?:\/\//i;
 // ffmpeg runs on files from anyone who posts one, with no click, so playlists and the like, which open
 // other files and URLs, are refused.
-const FF_INPUT = "-protocol_whitelist file -format_whitelist mov,matroska,avi,mpegts,mpeg,flv,ogg,asf,gif,webp,webp_pipe,png_pipe,apng,jpeg_pipe,bmp_pipe,tiff_pipe";
+export const FF_FORMATS = "-format_whitelist mov,matroska,avi,mpegts,mpeg,flv,ogg,asf,gif,webp,webp_pipe,png_pipe,apng,jpeg_pipe,bmp_pipe,tiff_pipe";
+const FF_INPUT = `-protocol_whitelist file ${FF_FORMATS}`;
 
 // exec cuts a program off after 30s, so anything that may run longer starts detached.
 const FETCH_FILE = `mkdir -p "$(dirname "$2")"
@@ -110,7 +111,7 @@ export class Media {
 
   avatar(user) {
     if (!user?.id) return null;
-    if (this.demo) return `mods/mattermost/demo/avatars/${user.id}.png`;
+    if (this.demo) return this.demoPictures?.get(user.id) ?? `mods/mattermost/demo/avatars/${user.id}.png`;
     return this.path(`${DIR}/avatars/${user.id}-${user.last_picture_update ?? 0}.png`, `/users/${user.id}/image?_=${user.last_picture_update ?? 0}`);
   }
 

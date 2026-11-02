@@ -1,5 +1,6 @@
 // A made-up team that answers the panel's API calls, for screenshots and for trying the mod without a
 // server: open the panel with props { demo: true }. Nothing here reaches the network.
+import { ACCOUNT_USER, ACCOUNT_CONFIG, accountApi } from "./account.js";
 
 const NOW = Date.now();
 const MIN = 60e3, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -7,6 +8,9 @@ const today = (h, m) => { const d = new Date(NOW); d.setHours(h, m, 0, 0); retur
 const daysAgo = (n, h, m) => today(h, m) - n * DAY;
 
 const ME = "u-alex";
+let dndEnd = 0;
+let manualStatus = false;
+let autoReset = null;
 const TEAM = { id: "t-acme", name: "acme", display_name: "Acme" };
 
 const PEOPLE = [
@@ -21,14 +25,24 @@ const PEOPLE = [
   ["u-ci", "ci-bot", "", "", ""],
 ];
 const USERS = PEOPLE.map(([id, username, first_name, last_name, position]) => ({
-  id, username, first_name, last_name, position, nickname: "", last_picture_update: 0, is_bot: id === "u-ci",
+  id, username, first_name, last_name, position, nickname: "", last_picture_update: 0, is_bot: id === "u-ci", email: `${username}@acme.example`,
+  notify_props: id === ME ? { mention_keys: "@alex,@release-team,staging,payments service", first_name: "true", channel: "true", highlight_keys: "regression,dry-run" } : {},
   props: id === "u-lena" ? { customStatus: JSON.stringify({ emoji: "palm_tree", text: "On holiday until Monday", duration: "dont_clear" }) }
-    : id === "u-sam" ? { customStatus: JSON.stringify({ emoji: "calendar", text: "In a meeting", duration: "dont_clear" }) } : {},
+    : id === "u-sam" ? { customStatus: JSON.stringify({ emoji: "calendar", text: "In a meeting", duration: "dont_clear" }) }
+      : id === ME ? { customStatus: JSON.stringify({ emoji: "house", text: "Working from home", duration: "" }) } : {},
+  ...(id === ME ? ACCOUNT_USER : {}),
 }));
+const RECENT_STATUSES = [{ emoji: "house", text: "Working from home", duration: "" }, { emoji: "hamburger", text: "Out for lunch", duration: "thirty_minutes" }, { emoji: "palm_tree", text: "On leave until July", duration: "this_week" }];
+// Props demoStatus and demoAutoReset start the demo as someone coming back: "ooo", or a status set by hand.
+export function demoStatus(status, reset) {
+  STATUS[ME] = status;
+  manualStatus = status !== "online";
+  autoReset = reset ?? null;
+}
 const STATUS = { "u-alex": "online", "u-sam": "dnd", "u-priya": "online", "u-jamie": "away", "u-lena": "offline", "u-marco": "online", "u-ines": "away", "u-tom": "offline" };
 
 const channel = (id, type, name, display_name, last, extra = {}) => ({
-  id, type, name, display_name, purpose: "", header: "", create_at: daysAgo(400, 9, 0), delete_at: 0,
+  id, team_id: type === "D" || type === "G" ? "" : TEAM.id, type, name, display_name, purpose: "", header: "", create_at: daysAgo(400, 9, 0), delete_at: 0,
   last_post_at: last, last_root_post_at: last, total_msg_count: 40, total_msg_count_root: 40, ...extra,
 });
 const CHANNELS = [
@@ -80,6 +94,9 @@ const release = add(post("c-eng", "u-ci", today(9, 12), "**Release 4.18.0** is o
 const standup = add(post("c-eng", "u-priya", today(10, 21), "The new settings screens are ready in Figma. @alex could you check the empty states before we hand them over?"));
 add(post("c-eng", "u-marco", today(10, 34), "iOS build is green again, it was a stale cache on the runner.", { edit_at: today(10, 36) }));
 add(post("c-eng", "u-marco", today(10, 35), "Cleaned it up and pinned the Xcode version :white_check_mark:"));
+add(post("c-eng", "u-tom", today(11, 5), "Alex, the staging runbook moved to [the staging guide](https://example.com/staging), also at https://example.com/staging/runbook. Not your name: alex, `staging` in code, #staging, staging@acme.dev."));
+add(post("c-eng", "u-sam", today(11, 8), "@channel staging is frozen until the dry-run is done, thanks for the heads up @alex :party_parrot:", { metadata: { emojis: [{ name: "party_parrot", id: "e-party" }] } }));
+add(post("c-eng", "u-ines", today(11, 12), "@channel a post from someone who can't notify everyone: staging stays dark here, and @alex too, but a dry-run still shows.", { props: { mentionHighlightDisabled: true } }));
 const lunch = add(post("c-eng", "u-jamie", today(11, 42), "Regression run finished: 412 passed, 0 failed. Ship it :tada:"));
 
 const REPLIES = {
@@ -87,6 +104,7 @@ const REPLIES = {
     post("c-eng", "u-tom", daysAgo(1, 16, 5), "Batches of 5k are fine on the new cluster.", { root_id: migration.id }),
     post("c-eng", "u-jamie", daysAgo(1, 16, 30), "I can run the dry run tomorrow morning.", { root_id: migration.id }),
     post("c-eng", "u-sam", today(9, 2), "Dry-run flag added, thanks both!", { root_id: migration.id }),
+    post("c-eng", "u-tom", today(9, 40), "@alex can you sign off the rollback plan?", { root_id: migration.id }),
   ],
   [standup.id]: [
     post("c-eng", ME, today(10, 40), "On it, I'll leave comments in the file.", { root_id: standup.id }),
@@ -97,6 +115,7 @@ const thread = (root, unread = 0) => {
   root.reply_count = replies.length;
   root.last_reply_at = replies[replies.length - 1].create_at;
   root.participants = [...new Set(replies.map((r) => r.user_id))].map((id) => ({ id }));
+  for (const r of replies) r.reply_count = replies.length;
   return { id: root.id, reply_count: root.reply_count, last_reply_at: root.last_reply_at, last_viewed_at: NOW - (unread ? DAY : 0),
     participants: root.participants.map(({ id }) => USERS.find((u) => u.id === id)), post: root, unread_replies: unread, unread_mentions: 0, is_following: true };
 }
@@ -132,22 +151,63 @@ const OTHER = {
   "c-gm": [post("c-gm", "u-jamie", today(9, 50), "Bug bash at 15:00, bring snacks")],
 };
 
+// Long enough that a post from weeks ago isn't among the 60 a channel opens with.
+const RANDOM = Array.from({ length: 200 }, (_, i) => post("c-random", ["u-tom", "u-lena", "u-jamie"][i % 3], daysAgo(2, 13, 0) - (200 - i) * 6 * HOUR, `Message number ${i + 1} in the long history of random.`));
+OTHER["c-random"].unshift(...RANDOM);
+const OLD_SAVED = RANDOM[40];
+OLD_SAVED.message = "Keep this one: the **wifi password** for the 3rd floor changed.";
+const MENTIONS = [OTHER["c-releases"][0], standup, REPLIES[migration.id][3], DESIGN[5],
+  post("c-releases", "u-tom", daysAgo(2, 9, 30), "@release-team the 4.18 branch is cut, please stop merging to it."),
+  post("c-town", "u-ines", daysAgo(12, 14, 5), "@alex welcome to the new office!")];
+const saved = new Set([release.id, REPLIES[migration.id][0].id, OLD_SAVED.id]);
+
 const DRAFTS = [
   { channel_id: "c-design", root_id: "", message: "Can we keep the **old tokens** until the release is out?", update_at: NOW - 3 * MIN },
-  { channel_id: "c-eng", root_id: migration.id, message: "I can take the backfill on Thursday.", update_at: NOW - 2 * HOUR },
+  { channel_id: "c-eng", root_id: migration.id, message: "I can take the staging backfill on Thursday.", update_at: NOW - 2 * HOUR },
   { channel_id: "c-dm-sam", root_id: "", message: "After lunch works, I'll grab a room.", update_at: NOW - 2 * DAY },
 ];
 
 const page = (posts) => ({ order: [...posts].reverse().map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) });
 const postsOf = (id) => (id === "c-eng" ? ENG : OTHER[id] ?? []);
-const findPost = (id) => [...ENG, ...Object.values(OTHER).flat(), ...Object.values(REPLIES).flat()].find((p) => p.id === id);
+const allPosts = () => [...ENG, ...Object.values(OTHER).flat(), ...Object.values(REPLIES).flat()];
+const findPost = (id) => allPosts().find((p) => p.id === id);
+const newestFirst = (posts) => [...posts].sort((a, b) => b.create_at - a.create_at);
+const pageOf = (posts) => ({ order: posts.map((p) => p.id), posts: Object.fromEntries(posts.map((p) => [p.id, p])) });
+
+// Enough of the server's search for the filters: quoted words OR together, in: and dates AND with them.
+const matchesSearch = (terms) => {
+  const keys = [...terms.matchAll(/"([^"]+)"/g)].map((m) => m[1].toLowerCase());
+  const rest = terms.replace(/"[^"]+"/g, "").trim().split(/\s+/).filter(Boolean);
+  const ins = rest.filter((w) => w.startsWith("in:")).map((w) => w.slice(3));
+  const day = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const on = rest.find((w) => w.startsWith("on:"))?.slice(3), after = rest.find((w) => w.startsWith("after:"))?.slice(6);
+  return (p) => (!keys.length || keys.some((k) => p.message.toLowerCase().includes(k)))
+    && (!ins.length || ins.includes(p.channel_id)) && (!on || day(p.create_at) === on) && (!after || day(p.create_at) > after);
+};
 
 // Answers like the server would, or throws as a 404 does.
 export async function demoApi(path, method, body) {
   const [route, query = ""] = path.split("?");
   const q = new URLSearchParams(query);
+  const account = accountApi(route, method, body, USERS[0]);
+  if (account !== undefined) return account;
   if (method !== "GET") {
-    if (route === "/users/status/ids") return body.map((user_id) => ({ user_id, status: STATUS[user_id] ?? "offline" }));
+    if (route === "/users/status/ids") return body.map((user_id) => ({ user_id, status: STATUS[user_id] ?? "offline", manual: user_id === ME && manualStatus, dnd_end_time: user_id === ME ? dndEnd : 0 }));
+    if (route === `/users/${ME}/status`) { STATUS[ME] = body.status; manualStatus = body.status !== "online"; dndEnd = body.dnd_end_time ?? 0; return { ...body, manual: manualStatus }; }
+    if (route === "/users/me/status/custom") {
+      USERS[0].props.customStatus = method === "PUT" ? JSON.stringify(body) : "";
+      if (method === "PUT") RECENT_STATUSES.splice(0, RECENT_STATUSES.length, body, ...RECENT_STATUSES.filter((s) => s.text !== body.text).slice(0, 4));
+      return {};
+    }
+    if (route === "/users/me/status/custom/recent/delete") { RECENT_STATUSES.splice(0, RECENT_STATUSES.length, ...RECENT_STATUSES.filter((s) => s.text !== body.text)); return {}; }
+    if (route === "/users/me/patch") { const { password, ...patch } = body; Object.assign(USERS[0], patch); return USERS[0]; }
+    if (route === `/users/${ME}/preferences` && body[0]?.category === "flagged_post") { saved.add(body[0].name); return {}; }
+    if (route === `/users/${ME}/preferences/delete` && body[0]?.category === "flagged_post") { saved.delete(body[0].name); return {}; }
+    if (route === `/users/${ME}/preferences` && body[0]?.category === "auto_reset_manual_status") { autoReset = body[0].value; return {}; }
+    if (route === `/teams/${TEAM.id}/posts/search`) {
+      const from = (body.page ?? 0) * (body.per_page ?? 20);
+      return { ...pageOf(newestFirst(MENTIONS.filter(matchesSearch(body.terms))).slice(from, from + (body.per_page ?? 20))), matches: {} };
+    }
     if (route === "/users/ids") return USERS.filter((u) => body.includes(u.id));
     if (route === "/users/usernames") return USERS.filter((u) => body.includes(u.username));
     if (route === "/channels/direct") return CHANNELS.find((c) => c.type === "D" && c.name.includes(body.find((id) => id !== ME))) ?? { id: "c-dm-sam" };
@@ -164,10 +224,19 @@ export async function demoApi(path, method, body) {
   let m;
   if (route === "/users/me") return USERS[0];
   if (route === "/users/me/teams") return [TEAM];
-  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true", EnableCustomGroups: "true", EnableCustomEmoji: "true" };
+  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true", EnableCustomGroups: "true", EnableCustomEmoji: "true", EnableCustomUserStatuses: "true", BuildEnterpriseReady: "true", EnablePublicLink: "true", ...ACCOUNT_CONFIG };
+  if ((m = route.match(/^\/files\/([^/]+)\/link$/))) return { link: `https://demo.invalid/files/${m[1]}/public?h=demo` };
   if (route === `/users/me/teams/${TEAM.id}/drafts`) return DRAFTS;
-  if (route === "/users/me/preferences/flagged_post") return [{ category: "flagged_post", name: release.id, value: "true" }];
-  if (route === "/users/me/preferences") return CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" }));
+  if (route === "/users/me/preferences/flagged_post") return [...saved].map((name) => ({ category: "flagged_post", name, value: "true" }));
+  if (route === "/users/me/preferences") return [
+    ...CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" })),
+    { category: "custom_status", name: "recent_custom_statuses", value: JSON.stringify(RECENT_STATUSES) },
+    ...(autoReset ? [{ category: "auto_reset_manual_status", name: ME, value: autoReset }] : []),
+  ];
+  if (route === `/users/${ME}/posts/flagged`) {
+    const n = Number(q.get("per_page")) || 60, from = (Number(q.get("page")) || 0) * n;
+    return pageOf(newestFirst([...saved].map(findPost)).slice(from, from + n));
+  }
   if (route === `/users/me/teams/${TEAM.id}/channels`) return CHANNELS;
   if (route === `/users/me/teams/${TEAM.id}/channels/members`) return MEMBERS;
   if (route === `/users/me/teams/${TEAM.id}/channels/categories` || route.endsWith("/channels/categories")) return { order: CATEGORIES.map((c) => c.id), categories: CATEGORIES };
@@ -184,7 +253,8 @@ export async function demoApi(path, method, body) {
   }
   if (route === "/users/autocomplete") return { users: USERS.filter((u) => u.username.includes(q.get("name") ?? "")) };
   if (route === "/users/me/teams/members") return [{ team_id: TEAM.id, roles: "team_user" }];
-  if (route === "/license/client") return { IsLicensed: "false" };
+  if (route === "/license/client") return { IsLicensed: "true", SkuShortName: "professional" };
+  if (route === "/groups" && q.get("filter_has_member")) return [{ name: "release-team", allow_reference: true, delete_at: 0, source: "custom" }];
   if (route === "/groups") return GROUPS.filter((g) => g.name.startsWith((q.get("q") ?? "").toLowerCase()));
   if (route.endsWith("/channels/autocomplete")) return [...CHANNELS, ...OUTSIDE_CHANNELS].filter((c) => (c.type === "O" || c.type === "P") && c.name.startsWith((q.get("name") ?? "").trim().toLowerCase()));
   if (route.endsWith("/commands/autocomplete_suggestions")) {
@@ -199,7 +269,17 @@ export async function demoApi(path, method, body) {
     return q.get("totalsOnly") === "true" ? totals : { threads: list, ...totals };
   }
   if ((m = route.match(/^\/users\/[^/]+\/teams\/[^/]+\/threads\/([^/]+)$/))) return THREADS.find((t) => t.id === m[1]) ?? { is_following: false };
-  if ((m = route.match(/^\/channels\/([^/]+)\/posts$/))) return q.get("before") ? { order: [], posts: {} } : page(postsOf(m[1]));
+  if ((m = route.match(/^\/channels\/([^/]+)\/posts$/))) {
+    const all = postsOf(m[1]), n = Number(q.get("per_page")) || 60;
+    const at = (id) => all.findIndex((p) => p.id === id);
+    if (q.get("before")) return page(all.slice(Math.max(0, at(q.get("before")) - n), Math.max(0, at(q.get("before")))));
+    if (q.get("after")) return page(all.slice(at(q.get("after")) + 1, at(q.get("after")) + 1 + n));
+    return page(all.slice(-n));
+  }
+  if ((m = route.match(/^\/channels\/([^/]+)$/))) {
+    const c = [...CHANNELS, ...OUTSIDE_CHANNELS].find((x) => x.id === m[1]);
+    if (c) return c;
+  }
   if ((m = route.match(/^\/channels\/([^/]+)\/stats$/))) return { channel_id: m[1], member_count: (GM_MEMBERS[m[1]] ?? USERS).length, pinnedpost_count: m[1] === "c-eng" ? 1 : 0, files_count: 3 };
   if ((m = route.match(/^\/channels\/([^/]+)\/pinned$/))) return m[1] === "c-eng" ? page([migration]) : page([]);
   if ((m = route.match(/^\/posts\/([^/]+)\/thread$/))) {

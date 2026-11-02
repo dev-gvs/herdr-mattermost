@@ -1,17 +1,21 @@
 // The menus drawn by a popup copy of this mod: a sidebar category's and a channel's ⋮, the channel
-// name in the top bar, a post's ⋯ and a followed thread's ⋮. Its props carry what the panel knew when
+// name in the top bar, a post's ⋯, a followed thread's ⋮ and your account. Its props carry what the panel knew when
 // it opened; the panel picks up results from the server's websocket events, and asks the panel itself
 // (shared "mattermost.request") for what only it can do, such as opening a thread beside the channel.
-import { div, svg } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, closeOverlay, openOverlay, theme, exec, setShared } from "herdr";
-import { FONT, alpha, requestKey } from "../main.js";
+import { props, closeOverlay, openOverlay, theme, setShared } from "herdr";
+import { FONT, alpha, requestKey, MONTHS } from "../main.js";
+import { imageEntries } from "./image.js";
 
 const icon = (name) => `mods/mattermost/icons/${name}.svg`;
 const SORTS = [["alpha", "Alphabetically"], ["recent", "Recent activity"], ["manual", "Manually"]];
 // Mattermost's menu: 36px rows, 8px above and below the list, separators with 8px around them.
 const ROW = 36, NOTE_ROW = 52, SEP = 17, PAD = 8, GAP = 2;
-const WIDTH = { category: 250, channel: 250, header: 250, post: 260, thread: 270 };
+const WIDTH = { category: 250, channel: 250, header: 250, post: 260, thread: 270, account: 264, image: 210 };
+const STATUS_ICON = { online: ["status-online", "#3db887"], away: ["status-away", "#f5ab00"], dnd: ["status-dnd", "#d24b4e"], offline: ["status-offline", "#afb3c0bf"] };
+const DND_NOTE = "Disables all notifications";
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const SUB_WIDTH = 230;
 const DM_SORTS = [["alpha", "Alphabetically"], ["recent", "Recent activity"]];
 const DM_LIMITS = [10, 15, 20, 40];
@@ -30,6 +34,18 @@ function tomorrowAt9() {
   d.setDate(d.getDate() + 1);
   d.setHours(9, 0, 0, 0);
   return d.getTime();
+}
+
+const twoDigits = (n) => String(n).padStart(2, "0");
+
+// As Mattermost's getSecondaryLabel words it.
+function dndNote(end) {
+  if (!end) return "Until indefinitely";
+  const when = new Date(end * 1000), time = `${twoDigits(when.getHours())}:${twoDigits(when.getMinutes())}`;
+  const days = Math.round((new Date(when).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400e3);
+  if (days === 0) return `Until ${time}`;
+  if (days === 1) return `Until tomorrow ${time}`;
+  return `Until ${MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()} ${time}`;
 }
 
 export class Menu {
@@ -159,7 +175,64 @@ export class Menu {
     if (s.kind === "category") return this.categoryEntries();
     if (s.kind === "post") return this.postEntries();
     if (s.kind === "thread") return this.threadEntries();
+    if (s.kind === "account") return this.accountEntries();
+    if (s.kind === "image") return imageEntries(s, () => this.close());
     return this.channelEntries();
+  }
+
+  setStatus(cx, status, dndEnd = 0) {
+    this.act(cx, async (cx) => {
+      await this.api(cx, `/users/${this.spec.me}/status`, { method: "PUT", body: { user_id: this.spec.me, status, ...(status === "dnd" ? { dnd_end_time: dndEnd } : {}) } });
+      request("status", { status, dndEnd });
+    });
+  }
+
+  // Out of office with no "Do not ask me again" on file, Mattermost confirms any status change first. A time
+  // chosen under Do not disturb is dropped by that, as it is there.
+  confirmStatus(newStatus) {
+    request("reset-status", { newStatus });
+    this.close();
+  }
+
+  // Mattermost's user_account_menu, with what's in reach here. The panel asks for its dialogs itself, since
+  // it holds what they open with.
+  accountEntries() {
+    const { user, status, dndEnd, custom, customEnabled, isDemo, askFirst } = this.spec;
+    const openDialog = (action) => () => { request(action); this.close(); };
+    const change = (cx, key) => (askFirst ? this.confirmStatus(key) : this.setStatus(cx, key));
+    const statusRow = (key, label, extra = {}) => {
+      const [name, color] = STATUS_ICON[key];
+      return { icon: name, iconColor: color, label, check: status === key, run: (cx) => change(cx, key), ...extra };
+    };
+    const glyph = custom?.glyph;
+    return [
+      { lead: (t) => (user.avatar ? image(user.avatar).size(36).flex_none().rounded_full() : div().size(36).flex_none().rounded_full().bg(t.raised)),
+        label: user.name || `@${user.username}`, note: user.name ? `@${user.username}` : null, big: true, run: openDialog("profile-dialog") },
+      "sep",
+      ...(status === "ooo" ? [
+        { icon: "circle-x", label: "Out of office", note: "Automatic replies are enabled", check: true, run: (cx) => change(cx, "online") },
+        "sep",
+      ] : []),
+      ...(customEnabled ? [
+        custom
+          ? { lead: () => (glyph?.path ? image(glyph.path).size(18).flex_none() : div().w(18).flex_none().text_size(15).child(glyph?.char ?? "")),
+            label: custom.text || "Set custom status text", note: custom.until || null, run: openDialog("status-dialog"),
+            clear: (cx) => this.act(cx, async (cx) => {
+              await this.api(cx, "/users/me/status/custom", { method: "DELETE" });
+              request("custom-status", { status: null });
+            }) }
+          : { icon: "smile", label: "Set custom status", run: openDialog("status-dialog") },
+        "sep",
+      ] : []),
+      statusRow("online", "Online"),
+      statusRow("away", "Away"),
+      statusRow("dnd", "Do not disturb", { note: status === "dnd" ? dndNote(dndEnd) : DND_NOTE, sub: "dnd", run: undefined }),
+      statusRow("offline", "Offline"),
+      "sep",
+      { icon: "user", label: "Profile", run: openDialog("profile-dialog") },
+      "sep",
+      { icon: "log-out", label: "Log out", disabled: isDemo, run: (cx) => { this.mode = "logout"; cx.notify(); } },
+    ];
   }
 
   categoryEntries() {
@@ -226,7 +299,7 @@ export class Menu {
         ...(direct ? [closeDirect] : [
           edit("header", "Edit Channel Header"), edit("purpose", "Edit Channel Purpose"),
           "sep",
-          { icon: "link", label: "Copy Link", run: (cx) => this.act(cx, () => exec("wl-copy", [link])) },
+          { icon: "link", label: "Copy Link", run: (cx) => { cx.write_to_clipboard(link); this.close(); } },
           "sep",
           leave,
         ]),
@@ -241,7 +314,7 @@ export class Menu {
       "sep",
       moveTo,
       "sep",
-      { icon: "link", label: "Copy Link", run: (cx) => this.act(cx, () => exec("wl-copy", [link])) },
+      { icon: "link", label: "Copy Link", run: (cx) => { cx.write_to_clipboard(link); this.close(); } },
       "sep",
       direct ? closeDirect : leave,
     ];
@@ -261,7 +334,7 @@ export class Menu {
     const thread = post.root_id || post.id;
     return [
       { icon: "reply", label: "Reply", run: () => { request("reply", { post: thread }); this.close(); } },
-      ...(following !== undefined ? [{ icon: following ? "message-square-x" : "message-square-plus", label: following ? "Unfollow thread" : "Follow thread",
+      ...(following != null ? [{ icon: following ? "message-square-x" : "message-square-plus", label: following ? "Unfollow thread" : "Follow thread",
         run: (cx) => this.act(cx, (cx) => this.api(cx, `/users/${this.spec.me}/teams/${this.spec.team.id}/threads/${thread}/following`, { method: following ? "DELETE" : "PUT" })) }] : []),
       { icon: "mail", label: "Mark as Unread", run: (cx) => this.act(cx, (cx) =>
         this.api(cx, `/users/${this.spec.me}/posts/${post.id}/set_unread`, { method: "POST", body: { collapsed_threads_supported: true } })) },
@@ -270,10 +343,10 @@ export class Menu {
       { icon: "pin", label: post.is_pinned ? "Unpin from Channel" : "Pin to Channel",
         run: (cx) => this.act(cx, (cx) => this.api(cx, `/posts/${post.id}/${post.is_pinned ? "unpin" : "pin"}`, { method: "POST" })) },
       "sep",
-      { icon: "link", label: "Copy Link", run: (cx) => this.act(cx, () => exec("wl-copy", [link])) },
+      { icon: "link", label: "Copy Link", run: (cx) => { cx.write_to_clipboard(link); this.close(); } },
       "sep",
       ...(own ? [{ icon: "pencil", label: "Edit", run: () => { request("edit", { post: post.id }); this.close(); } }] : []),
-      { icon: "copy", label: "Copy Text", run: (cx) => this.act(cx, () => exec("wl-copy", [post.message ?? ""])) },
+      { icon: "copy", label: "Copy Text", run: (cx) => { cx.write_to_clipboard(post.message ?? ""); this.close(); } },
       ...(own ? [{ icon: "trash", label: "Delete", danger: true, run: (cx) => { this.mode = "delete-post"; cx.notify(); } }] : []),
     ];
   }
@@ -290,12 +363,25 @@ export class Menu {
         ? { label: "Mark as read", run: (cx) => this.act(cx, (cx) => this.api(cx, `${base}/read/${Date.now()}`, { method: "PUT" })) }
         : { label: "Mark as unread", run: (cx) => this.act(cx, (cx) => this.api(cx, `${base}/set_unread/${thread.id}`, { method: "POST" })) },
       { label: saved ? "Unsave" : "Save", run: (cx) => this.act(cx, (cx) => this.save(cx, thread.id, saved)) },
-      { label: "Copy link", run: (cx) => this.act(cx, () => exec("wl-copy", [link])) },
+      { label: "Copy link", run: (cx) => { cx.write_to_clipboard(link); this.close(); } },
     ];
   }
 
   subEntries(sub) {
     const s = this.spec;
+    if (sub === "dnd") {
+      const at = (label, ms, detail) => ({ label, detail, run: (cx) => (s.askFirst ? this.confirmStatus("dnd") : this.setStatus(cx, "dnd", ms ? Math.floor(ms / 1000) : 0)) });
+      const tomorrow = new Date(tomorrowAt9());
+      return [
+        { heading: "Clear after:" },
+        at("Don't clear", 0),
+        at("30 mins", Date.now() + 30 * 60e3),
+        at("1 hour", Date.now() + 3600e3),
+        at("2 hours", Date.now() + 2 * 3600e3),
+        at("Tomorrow", tomorrow.getTime(), `${WEEKDAYS[tomorrow.getDay()]}, 09:00`),
+        { label: "Choose date and time", run: () => { if (s.askFirst) this.confirmStatus("dnd"); else { request("dnd-dialog"); this.close(); } } },
+      ];
+    }
     if (sub === "show") {
       return DM_LIMITS.map((n) => ({ label: String(n), check: n === s.dmLimit, run: (cx) => this.act(cx, (cx) =>
         this.api(cx, `/users/${s.me}/preferences`, { method: "PUT", body: [{ user_id: s.me, category: "sidebar_settings", name: "limit_visible_dms_gms", value: String(n) }] })) }));
@@ -336,11 +422,16 @@ export class Menu {
       })
       .when(!it.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(alpha(t.foreground, 0.08)))
         .on_click((_e, cx) => { if (it.run) it.run(cx); else { this.sub = it.sub; cx.notify(); } }))
-      .when(Boolean(it.icon), (el) => el.child(svg(icon(it.icon)).size(18).flex_none().text_color(it.danger ? t.blocked : alpha(t.foreground, 0.64))))
+      .when(Boolean(it.icon), (el) => el.child(svg(icon(it.icon)).size(18).flex_none().text_color(it.iconColor ?? (it.danger ? t.blocked : alpha(t.foreground, 0.64)))))
+      .when(Boolean(it.lead), (el) => el.child(it.lead(t)))
       .child(v_flex().flex_1().min_w(0)
-        .child(div().truncate().child(it.label))
+        .child(div().truncate().when(Boolean(it.big), (l) => l.text_size(16).font_semibold()).child(it.label))
         .when(Boolean(it.note), (el) => el.child(div().truncate().text_size(12).text_color(alpha(t.foreground, 0.56)).child(it.note))))
       .when(Boolean(it.detail), (el) => el.child(div().text_size(12).text_color(t.dim).child(it.detail)))
+      .when(Boolean(it.clear), (el) => el.child(div().id(`mi-clear-${key}`).p(2).flex_none().rounded(4).text_color(alpha(t.foreground, 0.56)).hover((s) => s.text_color(t.foreground))
+        .tooltip("Clear custom status")
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); it.clear(cx); })
+        .child(svg(icon("circle-x")).size(16))))
       .when(Boolean(it.check), (el) => el.child(svg(icon("check")).size(16).flex_none().text_color(t.accent)))
       .when(Boolean(it.sub), (el) => el.child(svg(icon("chevron-right")).size(14).flex_none().text_color(alpha(t.foreground, 0.56))));
   }
@@ -351,7 +442,11 @@ export class Menu {
   }
 
   list(t, items, prefix) {
-    return items.map((it, i) => (it === "sep" ? div().h(1).my(8).flex_none().bg(alpha(t.foreground, 0.16)) : this.row(t, it, `${prefix}${i}`)));
+    return items.map((it, i) => {
+      if (it === "sep") return div().h(1).my(8).flex_none().bg(alpha(t.foreground, 0.16));
+      if (it.heading) return div().h(ROW).flex_none().px(16).flex().items_center().font_bold().child(it.heading);
+      return this.row(t, it, `${prefix}${i}`);
+    });
   }
 
   confirm(t, question, action, onOk) {
@@ -401,6 +496,7 @@ export class Menu {
     if (this.mode === "delete") body = [this.confirm(t, `Delete “${cat.display_name}”? Its channels move back to Channels.`, "Delete", (cx) => this.api(cx, `${this.base()}/${cat.id}`, { method: "DELETE" }))];
     else if (this.mode === "leave") body = [this.confirm(t, `Leave ${channel.display}?`, "Leave", (cx) => this.api(cx, `/channels/${channel.id}/members/${this.spec.me}`, { method: "DELETE" }))];
     else if (this.mode === "delete-post") body = [this.confirm(t, "Delete this message?", "Delete", (cx) => this.api(cx, `/posts/${post.id}`, { method: "DELETE" }))];
+    else if (this.mode === "logout") body = [this.confirm(t, "Log out here? This deletes the saved token from this machine. The token stays valid on the server, and you'll need it or a new one to log back in.", "Log out", () => { request("logout"); })];
     else if (this.mode === "dm") body = [this.dmForm(t)];
     else if (this.mode) body = [this.nameForm(t)];
     else body = this.list(t, this.entries(), "m");
