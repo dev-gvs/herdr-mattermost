@@ -47,9 +47,37 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 
 ## Screenshots
 
+A thread beside the channel:
+
+![A thread beside the channel](screenshots/thread.png)
+
 Threads:
 
 ![Threads](screenshots/threads.png)
+
+Images, GIFs and files in messages:
+
+![Images, GIFs and files in messages](screenshots/media.png)
+
+The image viewer and its right-click menu:
+
+![The image viewer and its right-click menu](screenshots/image-viewer.png)
+
+Recent Mentions and its filters:
+
+![Recent Mentions and its filters](screenshots/mentions.png)
+
+Suggestions while typing:
+
+![Suggestions while typing](screenshots/suggestions.png)
+
+The account menu:
+
+![The account menu](screenshots/account-menu.png)
+
+Profile:
+
+![Profile](screenshots/profile.png)
 
 ## License
 
