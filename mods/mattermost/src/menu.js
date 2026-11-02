@@ -362,7 +362,12 @@ export class Menu {
     return v_flex().gap(10).px(16).py(4)
       .child(div().text_color(t.foreground).child(question))
       .child(h_flex().gap(6).justify_end()
-        .child(button("cancel", "Cancel", false, (_e, cx) => { this.mode = null; cx.notify(); }))
+        .child(button("cancel", "Cancel", false, (_e, cx) => {
+          // Opened straight at the question, there's no menu to go back to.
+          if (this.spec.mode) return this.close();
+          this.mode = null;
+          cx.notify();
+        }))
         .child(button("ok", action, true, (_e, cx) => this.act(cx, onOk))));
   }
 

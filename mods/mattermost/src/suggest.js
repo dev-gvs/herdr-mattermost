@@ -2,7 +2,7 @@
 // everyone, ~ for channels, : for emoji and / for commands at the start of a message.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Popup } from "gpui-base";
-import { appHome, readTextFile, settings } from "herdr";
+import { appHome, exec, settings } from "herdr";
 import { FONT, alpha, customStatus, liveStatus } from "../main.js";
 
 const WAIT = 100;
@@ -74,6 +74,15 @@ function channelMatches(c, words) {
   return words.every((word) => !word || names.some((name) => name.startsWith(word)));
 }
 
+// A name just put in opens no list of its own while the text goes on from it. Anywhere else, or as the
+// start of a longer word, it mustn't get in the way of another name that starts the same.
+function inCompleted(memo, prefix, start) {
+  const name = memo.completed;
+  if (name && start === memo.start && prefix.startsWith(name) && !/^[\p{L}\d\-_]/u.test(prefix.slice(name.length))) return true;
+  memo.completed = "";
+  return false;
+}
+
 const bareName = (name) => name.replace(/[.,'"\/#!$%\^&\*;:{}=\-_`~()]/g, "");
 
 export function compareChannels(a, b) {
@@ -115,14 +124,16 @@ export class Directory {
     this.license = null;
     this.agents = null;
     this.emoji = null;
-    this.keysFile = null;
+    this.keysStamp = null;
   }
 
-  // Herdr drops a mod's key bindings whenever keys.json changes, so they go back in when they next matter.
+  // Herdr drops a mod's key bindings whenever keys.json's modified time changes, even with the same text,
+  // so they go back in when they next matter. Binding them regardless would only pile them up.
   async bindKeys(cx) {
-    const file = await readTextFile(`${appHome()}/keys.json`).catch(() => "");
-    if (file === this.keysFile) return;
-    this.keysFile = file;
+    const stat = await exec("sh", ["-c", 'stat -c %y "$1" 2>/dev/null || stat -f %Fm "$1"', "sh", `${appHome()}/keys.json`]).catch(() => null);
+    const stamp = stat?.stdout ?? "";
+    if (stamp === this.keysStamp) return;
+    this.keysStamp = stamp;
     cx.bind_keys(KEYS);
   }
 
@@ -253,6 +264,8 @@ export class Suggest {
     this.selection = "";
     this.locked = false;
     this.completeNext = false;
+    this.at.completed = "";
+    this.tilde.completed = "";
     this.shownOpen = false;
     this.shownLive = false;
   }
@@ -268,13 +281,16 @@ export class Suggest {
   pretextChanged(pretext, cx) {
     this.locked = false;
     this.pretext = pretext;
+    this.completeNext = false;
     const run = ++this.run;
     cx.timer.after(WAIT, (cx) => { if (run === this.run) this.lookup(pretext, cx); });
   }
 
   lookup(pretext, cx) {
-    if (!this.panel.me) return;
-    if (!(this.atMention(pretext, cx) || this.channelMention(pretext, cx) || this.emoticon(pretext, cx) || this.command(pretext, cx))) this.clear(cx);
+    if (!this.panel.me) return false;
+    const found = this.atMention(pretext, cx) || this.channelMention(pretext, cx) || this.emoticon(pretext, cx) || this.command(pretext, cx);
+    if (!found) this.clear(cx);
+    return found;
   }
 
   show(matched, groups, cx) {
@@ -291,6 +307,14 @@ export class Suggest {
       this.completeNext = false;
       this.complete(this.selection, matched, cx);
     }
+  }
+
+  // A lookup has its last word. If that left nothing for a key pressed ahead of the list, the key does what
+  // it otherwise does.
+  settled(cx) {
+    if (!this.completeNext) return;
+    this.completeNext = false;
+    this.otherwise?.(cx);
   }
 
   clear(cx) {
@@ -319,7 +343,7 @@ export class Suggest {
     if (!found || !channel) return false;
     const [, matched, prefix] = found, memo = this.at;
     if (memo.channel !== channel) Object.assign(memo, { channel, data: null, empty: "" });
-    if (memo.completed && prefix.trim().startsWith(memo.completed.trim())) return false;
+    if (inCompleted(memo, prefix, pretext.length - matched.length)) return false;
     if (memo.empty && prefix.startsWith(memo.empty)) return false;
     const run = this.run, directory = this.directory;
     this.show(matched, this.atGroups(prefix, channel), cx);
@@ -343,6 +367,7 @@ export class Suggest {
         else if (memo.empty === prefix) memo.empty = "";
       }
       this.show(matched, groups, cx);
+      this.settled(cx);
       this.loadShown(data, cx);
     });
     return true;
@@ -397,7 +422,7 @@ export class Suggest {
       return aFirst !== bFirst ? (aFirst ? -1 : 1) : a.name.localeCompare(b.name);
     });
     const special = directory.can(channel, "use_channel_mentions") ? ["here", "channel", "all"].filter((name) => name.startsWith(prefix)) : [];
-    const outside = (data?.out_of_channel ?? []).filter(matches).filter((u) => !localIds.has(u.id)).sort(order);
+    const outside = (data?.out_of_channel ?? []).filter(matches).filter((u) => !localIds.has(u.id) && !priorityIds.has(u.id)).sort(order);
     return [
       group("defaultAgent", null, main ? [person(main, { agent: true })] : []),
       group("members", "Channel Members", members.map((u) => person(u))),
@@ -411,23 +436,23 @@ export class Suggest {
   channelMention(pretext, cx) {
     const found = CHANNEL_MENTION.exec(pretext.toLowerCase());
     if (!found || (found.index > 0 && pretext[found.index - 1] === "~")) return false;
-    const [whole, matched, prefix] = found, memo = this.tilde, { panel } = this;
+    const [, matched, prefix] = found, memo = this.tilde, { panel } = this;
     if (panel.clientConfig?.DelayChannelAutocomplete === "true" && prefix.length < MIN_CHANNEL) return false;
-    // More spaces after a word ask for nothing new, but the list has to replace them too.
-    if (memo.trimmed && prefix.trim() === memo.trimmed && this.results) {
-      this.results.matched = matched;
+    // More spaces after a word ask for nothing new, but the list has to replace them too. An answer still
+    // on its way was dropped with the edit, so that one has to be asked for again.
+    if (memo.trimmed && prefix.trim() === memo.trimmed && this.results?.groups.every((g) => g.items.every((it) => !it.loading))) {
+      this.show(matched, this.results.groups, cx);
       return true;
     }
     memo.trimmed = prefix.trim();
     if (memo.empty && prefix.startsWith(memo.empty)) return false;
-    if (memo.completed && whole.startsWith(memo.completed)) return false;
-    memo.completed = "";
+    if (inCompleted(memo, prefix, pretext.length - matched.length)) return false;
     const words = prefix.split(/\s+/);
     const item = (channel) => ({ kind: "channel", term: `~${channel.name}`, channel });
     const groups = (mine, others) => [group("myChannels", "My Channels", mine.sort(compareChannels).map(item)), others];
     const mine = [...panel.channels.values()].filter((c) => c.type === "O" && !c.delete_at && channelMatches(c, words));
-    this.show(matched, groups([...mine], loading("moreChannels", "Other Channels")), cx);
     const run = this.run;
+    this.show(matched, groups([...mine], loading("moreChannels", "Other Channels")), cx);
     cx.spawn(async (cx) => {
       let channels = [], failed = false;
       try {
@@ -449,6 +474,7 @@ export class Suggest {
         others.push(c);
       }
       this.show(matched, groups(mine, group("moreChannels", "Other Channels", others.map(item))), cx);
+      this.settled(cx);
     });
     return true;
   }
@@ -488,6 +514,7 @@ export class Suggest {
     }
     const order = (a, b) => compareEmoji(a, b, partial);
     this.show(text, [group("emojis", "Emoji", [...used.sort(order), ...rest.sort(order)])], cx);
+    this.settled(cx);
   }
 
   command(pretext, cx) {
@@ -516,6 +543,7 @@ export class Suggest {
         matches.unshift({ kind: "command", term: pretext + EXECUTE, title: "Execute Current Command", about: "Select this option or use Ctrl+Enter to execute the current command.", icon: EXECUTE });
       }
       this.show(pretext, [group("commands", "Commands", matches)], cx);
+      this.settled(cx);
     });
     return true;
   }
@@ -524,17 +552,18 @@ export class Suggest {
     this.run++;
     const finish = term.endsWith(EXECUTE);
     const fixed = finish ? term.slice(0, -EXECUTE.length) : term;
-    if (!finish) this.insert(fixed, matched);
+    const start = finish ? null : this.insert(fixed, matched);
     this.clear(cx);
     this.input.focus();
     if (finish) return this.execute?.(cx);
-    this.at.completed = fixed.replace(/^[@＠]/, "");
-    this.at.empty = "";
-    this.tilde.completed = fixed;
-    this.tilde.empty = "";
+    if (start === null) return;
+    const completed = fixed.replace(/^[@＠~]/, "").toLowerCase();
+    Object.assign(this.at, { completed, start, empty: "" });
+    Object.assign(this.tilde, { completed, start, empty: "" });
     if (this.commands && fixed.startsWith("/")) this.pretextChanged(`${fixed} `, cx);
   }
 
+  // Where the term went in, or null when it no longer fits.
   insert(term, matched) {
     const text = this.input.value(), caret = this.caret ?? text.length, pretext = text.slice(0, caret);
     let start;
@@ -542,31 +571,33 @@ export class Suggest {
     else {
       // The text moved on since the list came; the term is put in only if it still fits.
       const shared = overlap(pretext, term.slice(matched.length));
-      if (!shared) return;
       start = pretext.length - shared.length - matched.length;
+      if (!shared || pretext.slice(start, start + matched.length).toLowerCase() !== matched.toLowerCase()) return null;
     }
     this.input.set_selected_range({ start, end: caret });
     this.caret = start + term.length + 1;
     this.value = `${text.slice(0, start)}${term} ${text.slice(caret)}`;
     this.input.replace(`${term} `);
+    return start;
   }
 
   // Enter and Tab take the selected row. With the text ahead of the list, the row is taken as soon as
   // the list has caught up. False when there's nothing to take, so the key does what it otherwise does.
-  accept(cx) {
+  accept(cx, otherwise = null) {
     if (!this.hasLoaded()) return false;
     const { matched } = this.results;
-    if (this.pretext.toLowerCase().endsWith(matched.toLowerCase())) this.complete(this.selection, matched, cx);
-    else {
-      this.completeNext = true;
-      this.run++;
-      this.lookup(this.pretext, cx);
+    if (this.pretext.toLowerCase().endsWith(matched.toLowerCase())) {
+      this.complete(this.selection, matched, cx);
+      return true;
     }
-    return true;
+    this.completeNext = true;
+    this.otherwise = otherwise;
+    this.run++;
+    return this.lookup(this.pretext, cx);
   }
 
-  submit(event, cx) {
-    return !event?.secondary && this.accept(cx);
+  submit(event, cx, otherwise) {
+    if (event?.secondary || !this.accept(cx, otherwise)) otherwise(cx);
   }
 
   // A textarea has already put the line break in by the time it reports Enter.
@@ -612,7 +643,9 @@ export class Suggest {
       .on_action(ACTION_DOWN, (_e, cx) => this.arrow(1, cx))
       .on_action(ACTION_TAB, (_e, cx) => this.accept(cx))
       .on_key_down((e, cx) => {
-        if (e.keystroke !== "escape" || !this.isOpen()) return;
+        if (e.keystroke !== "escape") return;
+        this.run++;
+        if (!this.isOpen()) return;
         this.clear(cx);
         cx.stop_propagation();
       })

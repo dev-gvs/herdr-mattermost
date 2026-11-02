@@ -21,6 +21,8 @@ const DM_LIMIT = 40;
 const THREAD_LIST_W = 420;
 const ATTEMPTS = 3;
 const TIMEOUT = 15e3;
+// A server gives an integration's command 30 seconds by default, and a command may not be safe to send twice.
+const COMMAND_TIMEOUT = 60e3;
 // Posts drawn at once; more are drawn as the timeline is scrolled up.
 const WINDOW = 30;
 // A row's height before it has been drawn once, so a fresh channel builds only what is near the screen.
@@ -64,7 +66,7 @@ const serverUrl = (text) => {
 
 const sleep = (cx, ms) => new Promise((resolve) => cx.timer.after(ms, () => resolve()));
 // A stalled TLS handshake otherwise leaves a request pending forever.
-const timed = (cx, promise) => Promise.race([promise, sleep(cx, TIMEOUT).then(() => { throw new Error("timed out"); })]);
+const timed = (cx, promise, ms = TIMEOUT) => Promise.race([promise, sleep(cx, ms).then(() => { throw new Error("timed out"); })]);
 const pad = (n) => String(n).padStart(2, "0");
 const clock = (ms) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -349,8 +351,9 @@ export default class Mattermost extends View {
     this.editInput.on("change", (_e, cx) => { this.editPrev = this.editNow; this.editNow = this.editInput.value(); this.editSuggest.changed(cx); });
     this.editInput.on("submit", (e, cx) => {
       if (e.shift || !this.editing) return;
-      this.editSuggest.dropLineBreak(this.editPrev ?? "");
-      if (!this.editSuggest.submit(e, cx)) this.saveEdit(cx);
+      this.editNow = this.editPrev ?? "";
+      this.editSuggest.dropLineBreak(this.editNow);
+      this.editSuggest.submit(e, cx, (cx) => this.saveEdit(cx));
     });
     this.editInput.on("blur", (_e, cx) => this.editSuggest.blur(cx));
     this.editSuggest = this.newSuggest(cx, this.editInput, () => {
@@ -368,7 +371,7 @@ export default class Mattermost extends View {
       box.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
       box.input.on("blur", (_e, cx) => { this.typing = false; box.suggest.blur(cx); cx.notify(); });
       box.input.on("change", (_e, cx) => { this.noteDraft(box); box.suggest.changed(cx); });
-      box.input.on("submit", (e, cx) => { if (!box.suggest.submit(e, cx)) this.send(box, cx); });
+      box.input.on("submit", (e, cx) => box.suggest.submit(e, cx, (cx) => this.send(box, cx)));
     }
     this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
     this.tokenInput = InputState.new({ placeholder: "Paste the token" });
@@ -529,7 +532,7 @@ export default class Mattermost extends View {
     await Promise.allSettled([localStorage.flush(), this.ws?.close()]);
   }
 
-  async api(cx, path, { method = "GET", body } = {}) {
+  async api(cx, path, { method = "GET", body, attempts = ATTEMPTS, timeout = TIMEOUT } = {}) {
     if (this.cfg.demo) return demoApi(path, method, body);
     let res;
     // Some routes to a server drop TLS handshakes now and then; a fresh attempt usually gets through.
@@ -539,10 +542,10 @@ export default class Mattermost extends View {
           method,
           headers: { Authorization: `Bearer ${this.cfg.token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
           body: body && JSON.stringify(body),
-        }));
+        }), timeout);
         break;
       } catch (e) {
-        if (attempt >= ATTEMPTS) throw new Error(`${method} ${path.split("?")[0]}: ${e?.message ?? e}`);
+        if (attempt >= attempts) throw new Error(`${method} ${path.split("?")[0]}: ${e?.message ?? e}`);
       }
     }
     if (!res.ok) {
@@ -1157,10 +1160,10 @@ export default class Mattermost extends View {
     if (box && box.shown !== oneLine(text)) this.fill(box, key, text);
   }
 
-  clearDraft(key, cx) {
+  clearDraft(key, cx, keepFiles = false) {
     const d = this.drafts.get(key);
-    if (d?.remote) {
-      this.drafts.set(key, { ...d, message: "", file_ids: [], typing: false, dirty: true, update_at: Date.now() });
+    if (d?.remote || (keepFiles && d?.file_ids?.length)) {
+      this.drafts.set(key, { ...d, message: "", file_ids: keepFiles ? d.file_ids : [], typing: false, dirty: true, update_at: Date.now() });
       this.pushDraft(key, cx);
     } else this.drafts.delete(key);
     this.draftsTouched = true;
@@ -1174,7 +1177,8 @@ export default class Mattermost extends View {
     const command = d.message.startsWith("/") && this.notCommand !== d.message;
     this.notCommand = null;
     this.error = null;
-    this.clearDraft(key, cx);
+    // A command takes no files, so they stay in the draft for the next message.
+    this.clearDraft(key, cx, command);
     this.redraw(cx);
     cx.spawn(async (cx) => {
       try {
@@ -1216,10 +1220,14 @@ export default class Mattermost extends View {
       openOverlay({ mod: "mattermost", kind: "dialog", width: 640, height: 370, props: { demo: this.cfg?.demo, edit: { field, value: c[field] ?? "", channel: { id: c.id, type: c.type, name: c.name, display: this.channelName(c), header: c.header ?? "", purpose: c.purpose ?? "" } } } });
       return;
     }
-    const res = await this.api(cx, "/commands/execute", { method: "POST", body: { command, channel_id: d.channel_id, team_id: this.team.id, root_id: d.root_id } });
+    const res = await this.api(cx, "/commands/execute", { method: "POST", body: { command, channel_id: d.channel_id, team_id: this.team.id, root_id: d.root_id }, attempts: 1, timeout: COMMAND_TIMEOUT });
     // The demo has no websocket to bring the answer.
     if (this.cfg.demo && res.text) this.addEphemeral(d, res.text, cx);
-    if (res.goto_location) await this.goTo(res.goto_location, cx);
+    // The command has run by now, so failing to get there mustn't put it back in the box to run again.
+    if (res.goto_location) await this.goTo(res.goto_location, cx).catch((e) => {
+      this.error = String(e?.message ?? e);
+      this.redraw(cx);
+    });
   }
 
   // Where a command wants to take you: a conversation here when it's on this server, else the browser.
@@ -2686,7 +2694,7 @@ export default class Mattermost extends View {
     // Mattermost's reply count: a short line under the avatar, the count where the author's text starts.
     rows.push(["replies", () => h_flex().pl(POST_PAD + AVATAR_INSET).pt(12).pb(2).items_center()
       .child(div().h(1).w(AVATAR_COL - AVATAR_INSET - 13).flex_none().bg(t.border))
-      .child(div().ml(13).mr(10).text_size(12).font_semibold().text_color(t.muted).child(replies(rest.length)))
+      .child(div().ml(13).mr(10).text_size(12).font_semibold().text_color(t.muted).child(replies(rest.filter((p) => !isEphemeral(p)).length)))
       .child(div().h(1).flex_1().bg(t.border))]);
     const upto = Math.min(rest.length, limit);
     for (let i = 0; i < upto; i++) {
