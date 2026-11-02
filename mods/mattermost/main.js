@@ -847,6 +847,11 @@ export default class Mattermost extends View {
       if (this.opening !== id) return;
     }
     this.opening = null;
+    // Over the messages, the side view would hide the conversation that was just asked for.
+    if (!this.rhsBeside()) {
+      this.rhs = null;
+      this.rhsFrom = null;
+    }
     this.select(id);
     this.input.focus();
     this.redraw(cx);
@@ -2326,11 +2331,13 @@ export default class Mattermost extends View {
     return rows;
   }
 
+  rhsBeside() {
+    return this.width - (this.width >= WIDE ? this.sideW : 0) - this.rhsW >= MESSAGES_MIN;
+  }
+
   chat(t, wide) {
     const c = this.channels.get(this.selected);
-    const room = this.width - (wide ? this.sideW : 0);
-    const beside = room - this.rhsW >= MESSAGES_MIN;
-    if (this.rhs && !beside) return this.rhsView(t, c, true);
+    if (this.rhs && !this.rhsBeside()) return this.rhsView(t, c, true);
     const messages = v_flex().flex_1().min_w(0).h_full()
       .child(this.channelHeader(t, wide, c))
       .child(this.posts.get(c.id) ? this.timeline(c.id, this.channelRows(c, this.posts.get(c.id), t), t, false) : div().flex_1())
