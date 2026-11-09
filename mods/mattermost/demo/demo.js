@@ -289,6 +289,11 @@ export async function demoApi(path, method, body) {
     const root = findPost(m[1]);
     return page(root ? [root, ...(REPLIES[root.id] ?? [])] : []);
   }
+  if ((m = route.match(/^\/posts\/([^/]+)$/))) {
+    const p = findPost(m[1]);
+    if (p) return p;
+    throw Object.assign(new Error(`${method} ${route}: HTTP 404`), { status: 404 });
+  }
   if (route === "/emoji") return [];
   throw new Error(`${method} ${route}: HTTP 404`);
 }

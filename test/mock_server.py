@@ -68,8 +68,13 @@ CHANNEL_POSTS = [
     post("p7", "c1", "From someone without channel mentions: @channel b2c @sam, regression stays", props={"mentionHighlightDisabled": True}),
     post("p8", "c1", "Group highlight off: @b2c_team b2c", props={"disable_group_highlight": True}),
     post("p11", "c1", "My note, with the plan attached", user_id=ME, file_ids=["f2"], metadata={"files": [{"id": "f2", "name": "plan.txt", "extension": "txt", "mime_type": "text/plain", "size": 120, "post_id": "p11"}]}),
+    post("p12", "c1", "Links to this server:\n- [a root post in Town Square](http://127.0.0.1:18069/team/pl/p20)\n- [a reply](http://127.0.0.1:18069/team/pl/p21)\n- [a closed DM](http://127.0.0.1:18069/team/pl/p2)\n- [Town Square](http://127.0.0.1:18069/team/channels/town-square)\n- [Ann](http://127.0.0.1:18069/team/messages/@ann)\n- [a post that isn't there](http://127.0.0.1:18069/team/pl/nope)\n- [another team](http://127.0.0.1:18069/other/channels/x)\n- [the sign-in page](http://127.0.0.1:18069/login)\n- [elsewhere](https://example.com/page)", metadata={"embeds": [{"type": "permalink", "data": {"post_id": "p20", "post": None, "channel_display_name": "Town Square", "team_name": "team"}}]}),
     post("p10", "c1", "An attachment", props={"attachments": [{"pretext": "pretext b2c regression", "text": "text b2c @sam. regression", "fields": [{"title": "b2c", "value": "b2c", "short": True}]}]}),
 ]
+# Town Square, a second channel to jump to, and a reply in Bugs for permalinks to land on.
+TOWN = [post("p20", "c2", "The root post a permalink points at")]
+REPLIES = [post("p21", "c1", "The reply a permalink points at, with [a link to Town Square](http://127.0.0.1:18069/team/channels/town-square)", root_id="p1")]
+next(x for x in CHANNEL_POSTS if x["id"] == "p12")["metadata"]["embeds"][0]["data"]["post"] = TOWN[0]
 POSTS = [CHANNEL_POSTS[0], post("p2", "dclosed", "In a closed DM @sam"), post("p3", "cleft", "In an archived channel b2c")]
 CHANNEL_POSTS.append(CHANNEL_POSTS.pop(0))
 def plist(ps): return {"order": [p["id"] for p in reversed(ps)], "posts": {p["id"]: p for p in ps}}
@@ -130,9 +135,9 @@ class H(BaseHTTPRequestHandler):
         if p == "/license/client": return self.send(STATE["license"])
         if p == "/cloud/subscription": return self.send({"id": "s1", "product_id": "prod1"})
         if p == "/cloud/products": return self.send([{"id": "prod1", "sku": STATE.get("sku", "cloud-professional"), "name": "Plan"}])
-        if p == "/users/me/teams/t1/channels": return self.send([chan("c1", "O", "bugs", "Баги и вопросы"), EXTRA["dclosed"]])
-        if p == "/users/me/teams/t1/channels/members": return self.send([{"channel_id": "c1", "msg_count": 1, "msg_count_root": 1, "mention_count": 0, "mention_count_root": 0, "last_viewed_at": NOW, "notify_props": {}}])
-        if p == "/users/me/teams/t1/channels/categories": return self.send({"order": ["cat", "dm"], "categories": [{"id": "dm", "type": "direct_messages", "display_name": "Direct Messages", "channel_ids": ["dclosed"], "sorting": "alpha", "muted": False, "collapsed": False}, {"id": "cat", "type": "channels", "display_name": "Channels", "channel_ids": ["c1"], "sorting": "", "collapsed": False, "muted": False}]})
+        if p == "/users/me/teams/t1/channels": return self.send([chan("c1", "O", "bugs", "Баги и вопросы"), chan("c2", "O", "town-square", "Town Square"), EXTRA["dclosed"]])
+        if p == "/users/me/teams/t1/channels/members": return self.send([{"channel_id": "c1", "msg_count": 1, "msg_count_root": 1, "mention_count": 0, "mention_count_root": 0, "last_viewed_at": NOW, "notify_props": {}}, {"channel_id": "c2", "msg_count": 1, "msg_count_root": 1, "mention_count": 0, "mention_count_root": 0, "last_viewed_at": NOW, "notify_props": {}}])
+        if p == "/users/me/teams/t1/channels/categories": return self.send({"order": ["cat", "dm"], "categories": [{"id": "dm", "type": "direct_messages", "display_name": "Direct Messages", "channel_ids": ["dclosed"], "sorting": "alpha", "muted": False, "collapsed": False}, {"id": "cat", "type": "channels", "display_name": "Channels", "channel_ids": ["c1", "c2"], "sorting": "", "collapsed": False, "muted": False}]})
         if p == "/users/me/preferences":
             prefs = [{"category": "direct_channel_show", "name": "u2", "value": "true" if closed_shown else "false"}, {"category": "custom_status", "name": "recent_custom_statuses", "value": json.dumps([{"emoji": "hamburger", "text": "Out for lunch", "duration": "thirty_minutes"}])}]
             if STATE["pref"] is not None: prefs.append({"category": "auto_reset_manual_status", "name": ME, "value": STATE["pref"]})
@@ -150,13 +155,22 @@ class H(BaseHTTPRequestHandler):
         if p == f"/users/{ME}/posts/flagged": return self.send(plist(POSTS[:1]))
         m = re.fullmatch(r"/channels/([^/]+)", p)
         if m and m[1] in EXTRA: return self.send(EXTRA[m[1]])
+        if m and m[1] in ("c1", "c2"): return self.send(chan(m[1], "O", *{"c1": ("bugs", "Баги и вопросы"), "c2": ("town-square", "Town Square")}[m[1]]))
+        m = re.fullmatch(r"/teams/t1/channels/name/([^/]+)", p)
+        if m and m[1] in ("bugs", "town-square"): return self.send(chan(*{"bugs": ("c1", "O", "bugs", "Баги и вопросы"), "town-square": ("c2", "O", "town-square", "Town Square")}[m[1]]))
+        m = re.fullmatch(r"/posts/([^/]+)", p)
+        if m and method == "GET":
+            found = next((x for x in CHANNEL_POSTS + POSTS + TOWN + REPLIES if x["id"] == m[1]), None)
+            if found: return self.send(found)
+        if p == "/users/username/ann": return self.send(OTHER)
+        if p == "/channels/direct" and method == "POST": return self.send(EXTRA["dclosed"], 201)
         # {"last": id} through /__mock moves that post to the end, where it can be reached without the wheel.
         if re.fullmatch(r"/channels/[^/]+/posts", p):
             ps = CHANNEL_POSTS + [post(f"p{100 + i}", "c1", m) for i, m in enumerate(STATE.get("extra", []))]
             ps = sorted(ps, key=lambda x: x["id"] == STATE.get("last"))
             # {"post_files": {post id: [file ids from "files"]}} gives a post those files instead of its own.
             ps = [{**x, "file_ids": ids, "metadata": {**x["metadata"], "files": [STATE["files"][f] for f in ids]}} if (ids := STATE.get("post_files", {}).get(x["id"])) else x for x in ps]
-            return self.send(plist(ps if "c1" in p else [POSTS[1]] if "dclosed" in p else []))
+            return self.send(plist(ps if "c1" in p else TOWN if "c2" in p else [POSTS[1]] if "dclosed" in p else []))
         if re.fullmatch(r"/channels/[^/]+/stats", p): return self.send({"member_count": 2, "pinnedpost_count": 0, "files_count": 0})
         if p == "/channels/members/me/view": return self.send({"status": "OK"})
         if p == f"/users/{ME}/status" and method == "PUT":
@@ -196,7 +210,7 @@ class H(BaseHTTPRequestHandler):
                 except Exception: pass
             return self.send(np)
         m = re.fullmatch(r"/posts/([^/]+)/thread", p)
-        if m: return self.send(plist([x for x in CHANNEL_POSTS if x["id"] == m[1]]))
+        if m: return self.send(plist([x for x in CHANNEL_POSTS + TOWN + REPLIES if m[1] in (x["id"], x["root_id"])]))
         # As the server does, only a file some post holds gets a public link.
         m = re.fullmatch(r"/files/([^/]+)/link", p)
         if m:

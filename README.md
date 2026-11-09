@@ -32,6 +32,45 @@ You can also write the file yourself and `chmod 600` it:
 
 To try it without a server, give the block `"props": { "demo": true }`. It shows a made-up team and nothing reaches the network.
 
+## Links
+
+Links to your server clicked in the panel (permalinks, channels, direct messages, threads) open in the panel, as they do in the Mattermost app. Other pages on the server, such as sign-in or `/emoji`, and links you can't open here (another team, a channel you aren't in, a deleted post) go to the browser.
+
+### `mattermost://` links
+
+`handler/` has an optional handler for `mattermost://` links. With the Herdr window running and the panel shown, the link opens in the panel and the window comes forward. Otherwise, or when the panel can't show it, the link goes to the Mattermost desktop app as before. It never goes to the browser, which may be where the link came from. Install it:
+
+```sh
+install -Dm755 handler/herdr-mattermost-link ~/.local/bin/herdr-mattermost-link
+mkdir -p ~/.local/share/applications
+sed "s|^Exec=.*|Exec=$HOME/.local/bin/herdr-mattermost-link %u|" handler/herdr-mattermost-link.desktop > ~/.local/share/applications/herdr-mattermost-link.desktop
+xdg-mime default herdr-mattermost-link.desktop x-scheme-handler/mattermost
+```
+
+Uninstall it:
+
+```sh
+xdg-mime default mattermost-desktop.desktop x-scheme-handler/mattermost
+rm ~/.local/bin/herdr-mattermost-link ~/.local/share/applications/herdr-mattermost-link.desktop
+```
+
+If your desktop app's `.desktop` file isn't `mattermost-desktop.desktop`, set `HERDR_MM_DESKTOP` to its name in the `Exec` line (`Exec=env HERDR_MM_DESKTOP=… …`). A panel in a Herdr tab that isn't shown isn't running, so its links go to the desktop app.
+
+### Links in the browser
+
+The Mattermost web app sends a link to the desktop app only from its "View in Desktop App" page. That page appears once per browser, on the first visit, and only when the server has a desktop app download link and `EnableDesktopLandingPage` on. To send conversation links from the browser to the panel every time, use a redirect add-on such as [Redirector](https://addons.mozilla.org/firefox/addon/redirector/) with this rule. Replace `<server>` with your server's host, with its dots escaped in the pattern (`chat\.example\.com`):
+
+- Include pattern: `^https://<server>/([a-z0-9_-]+/(?:pl|channels|messages|threads)(?:/[^?#]*)?)(?:[?#].*)?$`
+- Redirect to: `mattermost://<server>/$1`
+- Pattern type: Regular Expression
+- Apply to (advanced options): Main window (address bar) only
+
+Sign-in, `/api`, `/files`, scripts and other pages don't match, so they stay in the browser. Caveats:
+
+- Firefox asks once which application opens `mattermost` links. Pick "Mattermost in Herdr" (or the system handler) and tick "Always". If you chose the desktop app there before, change it in Settings → General → Applications → mattermost.
+- The rule also catches the web app opened at a conversation's address, by a bookmark, a reload or a new tab, so while it's on the web app won't open at those addresses in that browser. Moving around inside the web app doesn't load a page, so it isn't affected.
+- With the rule on, links the panel leaves to the browser for a conversation it can't show (a channel you aren't in, another team) come back to the handler and open in the desktop app.
+
 ## Privacy
 
 - The token goes only to your Mattermost server: the API, the websocket and the downloads of its files.
@@ -42,7 +81,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 - Attaching files to a message uses `kdialog` or `zenity` (or a drop on the box). The files go to your Mattermost server through `curl`.
 - Choosing a profile picture uses `kdialog` or `zenity` if you have one. The picture goes to your Mattermost server and a temporary copy stays in `~/.config/herdr-app/data/mattermost/private/` until the section closes.
 - Save Image copies the file into your downloads folder. Save Image As… asks where through `kdialog` or `zenity` if you have one.
-- The mod runs `curl` for downloads, `xdg-open` for links and files, `wl-copy` for Copy Image and `wl-paste` for pasting images and files (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, pictures on the cards of files you attach before the server has them, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
+- The mod runs `curl` for downloads, `xdg-open` for links and files, `herdr-app` to bring the window forward for a `mattermost://` link, `wl-copy` for Copy Image and `wl-paste` for pasting images and files (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, pictures on the cards of files you attach before the server has them, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 

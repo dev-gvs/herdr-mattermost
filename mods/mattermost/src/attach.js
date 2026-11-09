@@ -1,7 +1,7 @@
 // What hangs off a message besides its text: attached files, images, bot attachments and link previews.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { alpha, fileSize, openLink } from "../main.js";
+import { alpha, fileSize } from "../main.js";
 import { MAX_PIXELS } from "./media.js";
 import { imageName } from "./image.js";
 
@@ -123,7 +123,7 @@ export function remoteImage(view, key, url, p, { w, h, link, maxW }, t) {
     return withImageMenu(animation(view, key, view.media.still(rel), box, t, (cx) => view.playRemoteAnimation(key, rel, cx)), view, picture);
   }
   return frame(`img-${key}`, box, t).cursor_pointer()
-    .on_click(() => (link || huge ? openLink(link ?? url) : rel && view.openLightbox(p, [picture], 0)))
+    .on_click((_e, cx) => (link || huge ? view.follow(link ?? url, cx) : rel && view.openLightbox(p, [picture], 0)))
     .when(huge, (el) => el.child("Too large to show here"))
     .when(Boolean(rel) && !huge, (el) => withImageMenu(el, view, picture).child(image(rel).size_full()));
 }
@@ -146,9 +146,9 @@ function card(color, t, children) {
     .child(v_flex().flex_1().min_w(0).p(12).gap(6).children(children));
 }
 
-function linkText(id, text, url, t, size = 14) {
+function linkText(view, id, text, url, t, size = 14) {
   return div().id(id).font_semibold().text_size(size).text_color(url ? t.accent : t.foreground)
-    .when(Boolean(url), (el) => el.cursor_pointer().on_click(() => openLink(url))).child(text);
+    .when(Boolean(url), (el) => el.cursor_pointer().on_click((_e, cx) => view.follow(url, cx))).child(text);
 }
 
 function small(icon, text, view, t) {
@@ -171,8 +171,8 @@ export function postAttachments(view, p, t, scope) {
   return list.slice(0, MAX_ATTACHMENTS).flatMap((a, i) => {
     const key = `${p.id}-a${i}`;
     const parts = [];
-    if (a.author_name) parts.push(a.author_link ? linkText(`${key}-author`, clip(a.author_name), a.author_link, t, 12) : small(a.author_icon, clip(a.author_name), view, t));
-    if (a.title) parts.push(linkText(`${key}-title`, clip(a.title), a.title_link, t));
+    if (a.author_name) parts.push(a.author_link ? linkText(view, `${key}-author`, clip(a.author_name), a.author_link, t, 12) : small(a.author_icon, clip(a.author_name), view, t));
+    if (a.title) parts.push(linkText(view, `${key}-title`, clip(a.title), a.title_link, t));
     const thumb = smallPicture(view, a.thumb_url);
     const text = a.text ? view.richText(key, clip(a.text), t, p, maxW - (a.thumb_url ? THUMB + 12 : 0), view.keys.forText()) : null;
     if (text || thumb) {
@@ -225,7 +225,7 @@ function linkPreview(view, key, e, t, p, maxW) {
     ...(site ? [div().text_size(12).text_color(t.muted).child(site)] : []),
     h_flex().items_start().gap(12)
       .child(v_flex().flex_1().min_w(0).gap(4)
-        .when(Boolean(title), (el) => el.child(linkText(`${key}-title`, title, e.url, t)))
+        .when(Boolean(title), (el) => el.child(linkText(view, `${key}-title`, title, e.url, t)))
         .when(Boolean(description), (el) => el.child(div().text_size(13).text_color(t.foreground).child(description))))
       .when(Boolean(thumb), (el) => el.child(thumbnail(view, key, url, thumb))),
     ...(url && large ? [remoteImage(view, `${key}-image`, url, p, { maxW }, t)] : []),
@@ -240,6 +240,6 @@ function quotedPost(view, key, data, t, p, maxW) {
     h_flex().gap(8).items_center().child(view.avatar(quoted.user_id, 20, t)).child(div().font_semibold().child(view.userName(quoted.user_id))),
     ...view.richText(key, quoted.message ?? "", t, p, maxW, view.keys.forPost(quoted)),
     div().id(`${key}-link`).text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.accent))
-      .on_click(() => openLink(`${view.cfg.url}/${data.team_name ?? view.team.name}/pl/${quoted.id}`)).child(where),
+      .on_click((_e, cx) => view.follow(`${view.cfg.url}/${data.team_name ?? view.team.name}/pl/${quoted.id}`, cx)).child(where),
   ])];
 }
