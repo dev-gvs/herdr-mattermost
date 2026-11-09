@@ -325,14 +325,15 @@ export class Suggest {
     this.redraw(cx);
   }
 
-  // Opening or closing changes the box's popup and key context, which belong to the messages part.
+  // Opening or closing changes the box's popup and key context, which belong to the part that draws the box:
+  // `host`, or the messages part for the edit box.
   redraw(cx) {
     const open = this.isOpen(), live = this.hasLoaded();
     if (open !== Boolean(this.shownOpen) || live !== Boolean(this.shownLive)) {
       if (live && !this.shownLive) cx.spawn((cx) => this.directory.bindKeys(cx));
       this.shownOpen = open;
       this.shownLive = live;
-      cx.notify(this.panel.mainPart);
+      cx.notify(this.host ?? this.panel.mainPart);
     }
     cx.notify(this.part);
   }
