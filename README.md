@@ -42,7 +42,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 - Attaching files to a message uses `kdialog` or `zenity` (or a drop on the box). The files go to your Mattermost server through `curl`.
 - Choosing a profile picture uses `kdialog` or `zenity` if you have one. The picture goes to your Mattermost server and a temporary copy stays in `~/.config/herdr-app/data/mattermost/private/` until the section closes.
 - Save Image copies the file into your downloads folder. Save Image As… asks where through `kdialog` or `zenity` if you have one.
-- The mod runs `curl` for downloads, `xdg-open` for links and files, and `wl-copy` for Copy Image (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
+- The mod runs `curl` for downloads, `xdg-open` for links and files, `wl-copy` for Copy Image and `wl-paste` for pasting images and files (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 
