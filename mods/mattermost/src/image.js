@@ -3,9 +3,9 @@
 // the clipboard.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, openOverlay, closeOverlay, exec, appHome, notify, readTextFile, run, settings, shared, spaces } from "herdr";
-import { FONT, requestKey, sleep } from "../main.js";
-import { FF_FORMATS, Media } from "./media.js";
+import { props, openOverlay, closeOverlay, exec, appHome, notify, readTextFile, run, settings, shared, spaces, theme } from "herdr";
+import { FONT, alpha, fileSize, requestKey, sleep } from "../main.js";
+import { FF_FORMATS, Media, openExternally, playExternally } from "./media.js";
 import { Menu, request } from "./menu.js";
 import { FIND_CHOOSER } from "./picture.js";
 
@@ -17,6 +17,82 @@ const PRIVATE = "data/mattermost/private";
 // Characters, not bytes: at three bytes each, with a counter added, this still fits a file name's 255 bytes.
 const MAX_NAME = 80;
 const OWN_REQUESTS = "mattermost.image-request";
+// Mattermost's CODE_PREVIEW_MAX_FILE_SIZE, and MAX_HIGHLIGHTED_LENGTH, past which a file's language goes unnamed.
+export const CODE_MAX_BYTES = 500000;
+const NAMED_MAX = 5000;
+const CODE_FONT = 13, CODE_LINE = "19px";
+// Mattermost's FileInfoPreview: two 320×270 halves on white, whatever the theme.
+const INFO_W = 320, INFO_H = 270, INFO_ICON = 80, NARROW = 768;
+
+// Mattermost's HighlightedLanguages: the files its preview shows as code, and the name it gives each language.
+const LANGUAGES = [
+["1C:Enterprise", ["bsl", "os"]],
+["ActionScript", ["as"]],
+["AppleScript", ["applescript", "osascript", "scpt"]],
+["Bash", ["sh"]],
+["Clojure", ["clj", "boot", "cl2", "cljc", "cljs", "cljs.hl", "cljscm", "cljx", "hic"]],
+["CoffeeScript", ["coffee", "_coffee", "cake", "cjsx", "cson", "iced"]],
+["C/C++", ["cpp", "c", "cc", "h", "c++", "h++", "hpp"]],
+["C#", ["cs", "csharp"]],
+["CSS", ["css"]],
+["D", ["d", "di"]],
+["Dart", ["dart"]],
+["Delphi", ["delphi", "dpr", "dfm", "pas", "pascal", "freepascal", "lazarus", "lpr", "lfm"]],
+["Diff", ["diff", "patch"]],
+["Django", ["django", "jinja"]],
+["Dockerfile", ["dockerfile", "docker"]],
+["Elixir", ["ex", "exs"]],
+["Erlang", ["erl"]],
+["Fortran", ["f90", "f95"]],
+["F#", ["fsharp", "fs"]],
+["G-Code", ["gcode", "nc"]],
+["Go", ["go"]],
+["Groovy", ["groovy"]],
+["Handlebars", ["handlebars", "hbs", "html.hbs", "html.handlebars"]],
+["Haskell", ["hs"]],
+["Haxe", ["hx"]],
+["Java", ["java", "jsp"]],
+["JavaScript", ["js", "jsx"]],
+["JSON", ["json"]],
+["Julia", ["jl"]],
+["Kotlin", ["kt", "ktm", "kts"]],
+["LaTeX", ["tex"]],
+["Less", ["less"]],
+["Lisp", ["lisp"]],
+["Lua", ["lua"]],
+["Makefile", ["mk", "mak"]],
+["Markdown", ["md", "mkdown", "mkd"]],
+["Matlab", ["matlab", "m"]],
+["Objective C", ["mm", "objc", "obj-c"]],
+["OCaml", ["ml"]],
+["Perl", ["perl", "pl"]],
+["PostgreSQL", ["pgsql", "postgres", "postgresql"]],
+["PHP", ["php", "php3", "php4", "php5", "php6"]],
+["PowerShell", ["ps", "ps1"]],
+["Puppet", ["pp"]],
+["Python", ["py", "gyp"]],
+["R", ["r"]],
+["Ruby", ["ruby", "rb", "gemspec", "podspec", "thor", "irb"]],
+["Rust", ["rs"]],
+["Scala", ["scala"]],
+["Scheme", ["scm", "sld"]],
+["SCSS", ["scss"]],
+["Smalltalk", ["st"]],
+["SQL", ["sql"]],
+["Stylus", ["styl"]],
+["Swift", ["swift"]],
+["Text", ["txt", "log"]],
+["TypeScript", ["ts", "tsx"]],
+["VB.Net", ["vbnet", "vb", "bas"]],
+["VBScript", ["vbs"]],
+["Verilog", ["v", "veo", "sv", "svh"]],
+["VHDL", ["vhd", "vhdl"]],
+["WebVTT", ["vtt"]],
+["HTML, XML", ["xml", "html", "xhtml", "rss", "atom", "xsl", "plist"]],
+["YAML", ["yaml"]]
+
+];
+export const codeLanguage = (ext) => LANGUAGES.find(([, list]) => list.includes((ext ?? "").toLowerCase()))?.[0] ?? null;
 
 const FIND_DOWNLOADS = `dir=$(xdg-user-dir DOWNLOAD 2>/dev/null)
 dir=\${dir%/}
@@ -117,11 +193,13 @@ export function handleImageRequest(panel, { what, image: picture }, cx) {
   cx.spawn(async (cx) => {
     try {
       await panel.cfgReady;
-      if (what === "copy") await copyImage(panel, picture, cx);
+      if (what === "open") await openOriginal(panel, picture, cx);
+      else if (what === "copy") await copyImage(panel, picture, cx);
       else if (what === "saveAs") await saveImageAs(panel, picture, cx);
       else await saveImage(panel, picture, cx);
     } catch (e) {
-      notify({ title: what === "copy" ? "Couldn't copy the image" : "Couldn't save the image", body: String(e?.message ?? e), level: "error" });
+      const failed = { copy: "Couldn't copy the image", open: "Couldn't open the file" }[what] ?? (picture.kind && picture.kind !== "image" ? "Couldn't save the file" : "Couldn't save the image");
+      notify({ title: failed, body: String(e?.message ?? e), level: "error" });
     }
   });
 }
@@ -131,6 +209,11 @@ async function original(panel, picture, cx) {
   const rel = picture.file ? await panel.media.download(panel.cfg, picture.file, (ms) => sleep(cx, ms)).catch(() => null) : picture.rel;
   if (!rel) throw new Error("The download failed.");
   return `${appHome()}/${rel}`;
+}
+
+async function openOriginal(panel, picture, cx) {
+  const path = await original(panel, picture, cx);
+  await (/^(video|audio)\//.test(picture.file?.mime_type ?? "") ? playExternally(path) : openExternally(path));
 }
 
 async function saveImage(panel, picture, cx, title = "Download Complete", note = null) {
@@ -182,6 +265,7 @@ export class Lightbox {
     this.spec = props().lightbox;
     this.index = this.spec.index ?? 0;
     this.size = null;
+    this.texts = new Map();
     this.focus = cx.focus_handle();
     this.focus.focus();
     // A floating window doesn't take the keyboard when it opens, and the menu that opened it is still closing.
@@ -194,9 +278,9 @@ export class Lightbox {
     this.seenRequest = shared(requestKey())?.id;
   }
 
-  save(item, cx) {
-    if (this.standalone) handleImageRequest(this.view, { what: "save", image: item }, cx);
-    else request("image", { what: "save", image: item });
+  ask(what, item, cx) {
+    if (this.standalone) handleImageRequest(this.view, { what, image: item }, cx);
+    else request("image", { what, image: item });
   }
 
   close() {
@@ -251,8 +335,9 @@ export class Lightbox {
         .child(`${this.index + 1} of ${items.length}`)
         .child(this.button("box-next", "chevron-right", "Next", (cx) => this.step(1, cx)).ml(12))))
       .child(h_flex().flex_1().min_w(0).justify_end().items_center().gap(8)
-        .when(Boolean(publicLink && item.file), (el) => el.child(this.button("box-link", "link-variant", "Get a public link", (cx) => this.copyPublicLink(cx))))
-        .child(this.button("box-download", "download-outline", "Download", (cx) => this.save(item, cx)))
+        // The server refuses a public link to a file no post holds yet, such as one in a draft.
+        .when(Boolean(publicLink && item.file && item.file.post_id !== ""), (el) => el.child(this.button("box-link", "link-variant", "Get a public link", (cx) => this.copyPublicLink(cx))))
+        .child(this.button("box-download", "download-outline", "Download", (cx) => this.ask("save", item, cx)))
         // In a tab, the tab bar closes it.
         .when(Boolean(props().overlay), (el) => el.child(this.button("box-close", "x", "Close", () => this.close()))));
   }
@@ -266,6 +351,65 @@ export class Lightbox {
       .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.focus.focus(); })
       .on_mouse_down("right", (e, cx) => { cx.stop_propagation(); openImageMenu({ image: item, viewer }, e.position); })
       .child(image(item.path).size_full().rounded(8));
+  }
+
+  // Mattermost's CodePreview, without the colours: the file's name and language over its lines and their numbers.
+  code(item, maxW, maxH, cx) {
+    const text = this.text(item, cx);
+    if (text === undefined) return div().id(`box-${this.index}`).child("Loading");
+    if (text === null) return this.info(item, maxW);
+    const t = theme();
+    const lines = text.split("\n").length;
+    const title = text.length <= NAMED_MAX ? `${item.name} - ${item.lang}` : item.name;
+    const mono = (el) => el.font_family(settings()?.font_family ?? "monospace").text_size(CODE_FONT).line_height(CODE_LINE).whitespace_nowrap();
+    return v_flex().id(`box-${this.index}`).flex_none().min_w(330).max_w(Math.max(330, maxW)).max_h(Math.max(130, maxH)).rounded(8).overflow_hidden()
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.focus.focus(); })
+      .on_click((_e, cx) => cx.stop_propagation())
+      .child(div().flex_none().h(28).ml(4).px(8).py(4).rounded(4).truncate().text_center().text_size(14)
+        .bg(alpha(t.foreground, 0.75)).text_color(t.background).child(title))
+      .child(h_flex().id(`box-code-${this.index}`).flex_1().min_h(0).items_start().overflow_scroll().p(8.5).rounded(4)
+        .border_1().border_color(alpha(t.foreground, 0.2)).bg(t.background).text_color(t.foreground)
+        .child(mono(div()).flex_none().min_w(36).py(5).pr(8).mr(12).border_r_1().border_color("#cccccc3d").text_right().text_color("#cccccc")
+          .child(Array.from({ length: lines }, (_v, i) => i + 1).join("\n")))
+        .child(mono(div()).flex_none().py(5).child(text)));
+  }
+
+  // undefined while it's read, null when it can't be, which shows the file's details instead, as Mattermost does.
+  text(item, cx) {
+    const key = item.file.id;
+    if (this.texts.has(key)) return this.texts.get(key);
+    this.texts.set(key, undefined);
+    cx.timer.after(0, (cx) => cx.spawn(async (cx) => {
+      const text = await readTextFile(`${appHome()}/${item.rel}`).catch(() => null);
+      this.texts.set(key, text === null ? null : text.replace(/\r\n/g, "\n"));
+      cx.notify();
+    }));
+    return undefined;
+  }
+
+  // Mattermost's FileInfoPreview for what it can't show: the type's icon, which opens the file, then its name,
+  // type and size. Below a phone's width the halves stack.
+  info(item, width) {
+    const narrow = width > 0 && width < NARROW;
+    const facts = [item.extension ? `File type ${item.extension.toUpperCase()}` : "", item.size ? `Size ${fileSize(item.size)}` : ""].filter(Boolean).join(", ");
+    const icon = div().id(`box-open-${this.index}`).flex().items_center().justify_center().flex_none().cursor_pointer()
+      .when(narrow, (el) => el.w_full().h(150).border_b_1()).when(!narrow, (el) => el.w(INFO_W).h(INFO_H).border_r_1()).border_color("#3f43501f")
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.focus.focus(); })
+      .on_click((_e, cx) => { cx.stop_propagation(); this.ask("open", item, cx); })
+      .child(image(item.icon).w(narrow ? 64 : INFO_ICON).h((narrow ? 64 : INFO_ICON) * 1.25));
+    return (narrow ? v_flex().w_full() : h_flex()).id(`box-${this.index}`).flex_none().bg(WHITE).text_size(14)
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.focus.focus(); })
+      .on_click((_e, cx) => cx.stop_propagation())
+      .child(icon)
+      .child(div().flex_none().p(14).when(narrow, (el) => el.w_full()).when(!narrow, (el) => el.w(INFO_W).h(INFO_H))
+        .child(div().my(5).text_size(16).text_color("#000000e6").child(item.name ?? ""))
+        .child(div().text_color("#00000080").child(facts)));
+  }
+
+  content(item, maxW, maxH, width, cx) {
+    if (item.kind === "code") return this.code(item, maxW, maxH, cx);
+    if (item.kind === "info") return this.info(item, width - 2 * CONTENT_PAD);
+    return this.picture(item, maxW, maxH);
   }
 
   render(cx) {
@@ -297,6 +441,6 @@ export class Lightbox {
       .child(this.header(item, width))
       .child(div().id("box-content").flex_1().min_h(0).w_full().flex().items_center().justify_center().p(CONTENT_PAD).bg("#000000e6")
         .when(closes, (el) => el.on_click(() => this.close()))
-        .child(this.picture(item, width - 2 * CONTENT_PAD, height - HEADER_H - 2 * CONTENT_PAD)));
+        .child(this.content(item, width - 2 * CONTENT_PAD, height - HEADER_H - 2 * CONTENT_PAD, width, cx)));
   }
 }

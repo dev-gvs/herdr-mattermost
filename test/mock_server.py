@@ -84,6 +84,9 @@ def image_info(data):
         return "image/jpeg", 0, 0
     return None, 0, 0
 
+# What /files/{id} serves for files that aren't uploads, by id; anything else gets the JPEG.
+FILE_BODIES = {"f2": b"Plan\n\n1. Ship the attachment cards\n2. Open them in the viewer\n3. Celebrate\n"}
+
 def multipart_files(raw):
     out = []
     for part in raw.split(b"\r\n--"):
@@ -272,7 +275,11 @@ class H(BaseHTTPRequestHandler):
             return self.send(np)
         m = re.fullmatch(r"/posts/([^/]+)/thread", p)
         if m: return self.send(plist([x for x in CHANNEL_POSTS if x["id"] == m[1]]))
-        if p == "/files/f1/link": return self.send({"link": "http://127.0.0.1:18069/files/f1/public?h=abc"})
+        # As the server does, only a file some post holds gets a public link.
+        m = re.fullmatch(r"/files/([^/]+)/link", p)
+        if m:
+            if any(x["id"] == m[1] for x in STATE["uploads"]): return self.send({"id": "api.file.get_public_link.no_post.app_error", "message": "Unable to get public link for file. File must be attached to a post that can be read."}, 400)
+            return self.send({"link": f"http://127.0.0.1:18069/files/{m[1]}/public?h=abc"})
         if re.fullmatch(r"/files/f1(/preview|/thumbnail)?", p):
             data = open(IMAGE, "rb").read()
             self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
@@ -282,16 +289,17 @@ class H(BaseHTTPRequestHandler):
         if p == "/commands/execute": return self.send({"text": "ran"})
         if p == "/files" and method == "POST":
             infos = []
+            channel = (re.search(rb'name="channel_id"\r\n\r\n([^\r]*)', raw) or [b"", b""])[1].decode()
             for i, (name, data) in enumerate(multipart_files(raw)):
                 mime, w, h = image_info(data)
                 fid = "up%d" % (len(STATE["uploads"]) + i)
                 UPLOADED[fid] = data
-                infos.append({"id": fid, "name": name, "extension": name.rsplit(".", 1)[-1].lower() if "." in name else "", "size": len(data), "mime_type": mime or "application/octet-stream", "width": w, "height": h, "has_preview_image": bool(mime)})
+                infos.append({"id": fid, "name": name, "extension": name.rsplit(".", 1)[-1].lower() if "." in name else "", "size": len(data), "mime_type": mime or "application/octet-stream", "width": w, "height": h, "has_preview_image": bool(mime), "user_id": ME, "channel_id": channel, "post_id": "", "delete_at": 0})
             STATE["uploads"] += infos
             return self.send({"file_infos": infos, "client_ids": []}, 201)
         m = re.fullmatch(r"/files/([^/]+)(/preview|/thumbnail)?", p)
-        if m and m[1] in UPLOADED or m and m[1] in STATE["files"]:
-            data = UPLOADED.get(m[1]) or open(IMAGE, "rb").read()
+        if m and (m[1] in UPLOADED or m[1] in STATE["files"] or m[1] in FILE_BODIES):
+            data = UPLOADED.get(m[1]) or FILE_BODIES.get(m[1]) or open(IMAGE, "rb").read()
             self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
             return
         m = re.fullmatch(r"/files/([^/]+)/info", p)
