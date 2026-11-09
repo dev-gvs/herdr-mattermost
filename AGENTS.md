@@ -64,7 +64,7 @@ test/sandbox.sh stop
 
 ### Traps
 
-- The wheel can't be injected, so you can't scroll. To reach a post, make it the last one: move its line to the end of `DESIGN` in the sandbox's `demo/demo.js`, or to the end of `CHANNEL_POSTS` in the mock. The demo orders posts by their place in that array, not by time. After changing the mock, run `start server`, because `restart` leaves the mock running with its old code.
+- The wheel can't be injected, so you can't scroll. To reach a post, make it the last one: move its line to the end of `DESIGN` in the sandbox's `demo/demo.js`, or to the end of `CHANNEL_POSTS` in the mock, or `POST /__mock` with `{"last": "p11"}` and `restart server` (p11 is your own post with a file, for editing). The demo orders posts by their place in that array, not by time. After changing the mock, run `start server`, because `restart` leaves the mock running with its old code.
 - Never list a post id twice in test data. Its elements then get the same ids, and left clicks on them stop firing while right clicks still work.
 - The row under the pointer counts as hovered and post action bars appear on it, so park the pointer elsewhere (`at:1000,20`) before judging a screenshot.
 - Changing a mod file while a dialog is open loses keyboard focus, so Esc stops closing it. Close dialogs before `sync`.

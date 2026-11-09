@@ -345,7 +345,7 @@ export class Menu {
       "sep",
       { icon: "link", label: "Copy Link", run: (cx) => { cx.write_to_clipboard(link); this.close(); } },
       "sep",
-      ...(own ? [{ icon: "pencil", label: "Edit", run: () => { request("edit", { post: post.id }); this.close(); } }] : []),
+      ...(own ? [{ icon: "pencil", label: "Edit", run: () => { request("edit", { post: post.id, scope: this.spec.scope }); this.close(); } }] : []),
       { icon: "copy", label: "Copy Text", run: (cx) => { cx.write_to_clipboard(post.message ?? ""); this.close(); } },
       ...(own ? [{ icon: "trash", label: "Delete", danger: true, run: (cx) => { this.mode = "delete-post"; cx.notify(); } }] : []),
     ];

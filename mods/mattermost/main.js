@@ -13,7 +13,7 @@ import { ProfileDialog, openProfileDialog } from "./src/profile.js";
 import { StatusDialog, DndDialog, STATUS_W, STATUS_H, DND_W, DND_H, SUGGESTIONS } from "./src/status.js";
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { Suggest, Directory } from "./src/suggest.js";
-import { composerView, noteEmpty, insertAtCaret, iconButton, FORMAT_PREF } from "./src/composer.js";
+import { composerView, noteText, insertAtCaret, iconButton, FORMAT_PREF } from "./src/composer.js";
 import { filePreviews, canUpload } from "./src/upload.js";
 import { PriorityPicker, openPriorityPicker, priorityEnabled, priorityLabels, priorityTag, hasPriority } from "./src/priority.js";
 import { HighlightKeys, NO_KEYS } from "./src/highlight.js";
@@ -51,6 +51,7 @@ const HIGHLIGHT = 5000;
 // They match far more posts than people think of as a mention of them, so Mattermost's search leaves them out.
 const CHANNEL_WIDE = ["@channel", "@all", "@here"];
 const RHS_WIDE_SCREEN = 1280;
+const EDIT_KEY = "edit:";
 const EDIT_ROWS = 14, MIN_BOX_ROWS = 3, BOX_LINE = 20;
 const BAR_H = 36;
 const ACCOUNT_W = 264;
@@ -143,6 +144,7 @@ const MESSAGES_MIN = 420;
 // Mattermost's own UI font, so text and weights match the desktop app.
 export const FONT = "Open Sans";
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
+const postFileIds = (p) => (p.file_ids?.length ? p.file_ids : (p.metadata?.files ?? []).map((f) => f.id));
 const CHANNEL_KEYS = ["id", "team_id", "type", "name", "display_name", "purpose", "header", "create_at", "delete_at",
   "last_post_at", "last_root_post_at", "total_msg_count", "total_msg_count_root", "group_constrained"];
 const slimChannel = (c) => pick(c, CHANNEL_KEYS);
@@ -430,7 +432,7 @@ export default class Mattermost extends View {
       { input: this.replyInput, thread: true, key: null, name: "reply", where: "comment", rhs: true },
       { input: this.threadInput, thread: true, key: null, name: "thread", where: "post", rhs: false },
     ];
-    this.formatHidden = { post: false, comment: false };
+    this.formatHidden = { post: false, comment: false, edit: false };
     // A priority chosen before there's any text, which has no draft to live in yet.
     this.pendingPriority = new Map();
     // Files on their way up, by draft, and what's known of the files drafts hold.
@@ -445,15 +447,22 @@ export default class Mattermost extends View {
     // The message boxes work the same way.
     this.editInput = TextareaState.new({ placeholder: "Edit the post..." });
     this.editInput.set_auto_grow(1, EDIT_ROWS);
-    this.editInput.on("change", (_e, cx) => { this.editPrev = this.editNow; this.editNow = this.editInput.value(); this.editSuggest.changed(cx); });
+    const edit = this.editBox = { input: this.editInput, name: "edit", edit: true, key: null, fileIds: [], empty: true };
+    this.editInput.on("change", (_e, cx) => {
+      edit.before = edit.now;
+      edit.now = this.editInput.value();
+      edit.suggest.changed(cx);
+      if (noteText(edit)) cx.notify(edit.part);
+    });
     this.editInput.on("submit", (e, cx) => {
       if (e.shift || !this.editing) return;
-      this.editNow = this.editPrev ?? "";
-      this.editSuggest.dropLineBreak(this.editNow);
-      this.editSuggest.submit(e, cx, (cx) => this.saveEdit(cx));
+      edit.now = edit.before ?? "";
+      edit.suggest.dropLineBreak(edit.now);
+      edit.suggest.submit(e, cx, (cx) => this.saveEdit(cx));
     });
-    this.editInput.on("blur", (_e, cx) => this.editSuggest.blur(cx));
-    this.editSuggest = this.newSuggest(cx, this.editInput, () => {
+    this.editInput.on("focus", (_e, cx) => { edit.focused = true; cx.notify(edit.part); });
+    this.editInput.on("blur", (_e, cx) => { edit.focused = false; edit.suggest.blur(cx); cx.notify(edit.part); });
+    edit.suggest = this.newSuggest(cx, this.editInput, () => {
       const p = this.editing && this.findAnyPost(this.editing);
       return { channel: p?.channel_id, root: p?.root_id ?? "" };
     }, { commands: false });
@@ -461,6 +470,7 @@ export default class Mattermost extends View {
     this.frame = Boolean(props()?.frame);
     this.focus = cx.focus_handle();
     for (const box of this.boxes) {
+      box.previewFocus = cx.focus_handle();
       box.input.set_auto_grow(1, EDIT_ROWS);
       box.suggest = this.newSuggest(cx, box.input, () => ({
         channel: box.thread ? this.drafts.get(box.key)?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key,
@@ -476,7 +486,7 @@ export default class Mattermost extends View {
         box.now = box.input.value();
         this.noteDraft(box);
         box.suggest.changed(cx);
-        if (noteEmpty(box)) cx.notify(box.part);
+        if (noteText(box)) cx.notify(box.part);
       });
       box.input.on("submit", (e, cx) => {
         if (e.shift) return;
@@ -486,6 +496,9 @@ export default class Mattermost extends View {
         box.suggest.submit(e, cx, (cx) => this.send(box, cx));
       });
     }
+    edit.previewFocus = cx.focus_handle();
+    edit.part = this.parts["composer-edit"] = cx.new(Part, { owner: this.ownerKey, part: "composer-edit" });
+    edit.suggest.host = edit.part;
     this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
     this.tokenInput = InputState.new({ placeholder: "Paste the token" });
     this.tokenInput.set_masked(true);
@@ -629,8 +642,12 @@ export default class Mattermost extends View {
       cx.notify(this.sidePart);
       cx.notify(this.mainPart);
       for (const s of Object.values(this.suggesters)) if (s.isOpen()) cx.notify(s.part);
-      for (const box of this.boxes) cx.notify(box.part);
+      for (const box of this.allBoxes()) cx.notify(box.part);
     }
+  }
+
+  allBoxes() {
+    return [...this.boxes, this.editBox];
   }
 
   // Each list is a retained part of its own, so moving through it doesn't rebuild the messages.
@@ -770,7 +787,7 @@ export default class Mattermost extends View {
     this.teamsOrder = prefs.find((x) => x.category === "teams_order")?.value ?? "";
     this.skinTone = prefs.find((x) => x.category === "emoji" && x.name === "emoji_skintone")?.value ?? "default";
     this.autoResetPref = prefs.find((x) => x.category === "auto_reset_manual_status" && x.name === this.me.id)?.value ?? "";
-    this.formatHidden = Object.fromEntries(["post", "comment"].map((name) => [name, prefs.some((x) => x.category === FORMAT_PREF && x.name === name && x.value === "true")]));
+    this.formatHidden = Object.fromEntries(["post", "comment", "edit"].map((name) => [name, prefs.some((x) => x.category === FORMAT_PREF && x.name === name && x.value === "true")]));
     try {
       this.recentEmoji = new Set(JSON.parse(prefs.find((x) => x.category === "recent_emojis" && x.name === this.me.id)?.value ?? "[]").map((r) => r.name));
     } catch {}
@@ -1520,6 +1537,7 @@ export default class Mattermost extends View {
     box.key = key;
     box.empty = !box.now.trim();
     box.preview = false;
+    box.long = false;
   }
 
   leaveDraft(box, cx) {
@@ -1532,7 +1550,7 @@ export default class Mattermost extends View {
   }
 
   noteDraft(box) {
-    if (!box.key) return;
+    if (!box.key || box.edit) return;
     const value = box.input.value(), message = value.trim() ? value : "";
     if (value === box.shown) return;
     const old = this.drafts.get(box.key);
@@ -1771,10 +1789,10 @@ export default class Mattermost extends View {
     else if (req.action === "drafts") takeDrafts(this, req.changes, cx);
     else if (req.action === "threads") this.openThreads(cx);
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
-    else if (req.action === "edit") this.startEdit(req.post, cx);
+    else if (req.action === "edit") this.startEdit(req.post, req.scope, cx);
     else if (req.action === "priority") this.setPriority(req.key, req.priority, cx);
     else if (req.action === "insert-emoji") {
-      const box = this.boxes.find((b) => b.name === req.box);
+      const box = this.allBoxes().find((b) => b.name === req.box);
       if (box) { insertAtCaret(this, box, req.text); cx.notify(box.part); }
     }
     else if (req.action === "image") handleImageRequest(this, req, cx);
@@ -1893,16 +1911,35 @@ export default class Mattermost extends View {
     return Math.max(120, (room || 480) - AVATAR_COL - POST_PAD - 15);
   }
 
-  // Mattermost edits in place: the message becomes a text box until saved or cancelled.
-  startEdit(id, cx) {
+  // Mattermost edits in place, in the one spot it was asked from: the message becomes its editor until saved
+  // or cancelled. Mattermost counts a reply, or a post in the right-hand side, as the RHS's editor, whose bar
+  // has its own "edit" preference; a root post in the centre shares the message box's.
+  startEdit(id, scope, cx) {
     const p = this.findAnyPost(id);
     if (!p) return;
+    const box = this.editBox, rhs = Boolean(scope) && scope !== "c" && scope !== "t";
+    const text = p.message ?? "";
     this.editing = id;
-    this.editInput.set_value(p.message ?? "");
-    this.editPrev = this.editNow = p.message ?? "";
-    this.editSuggest.reset(0);
+    this.editScope = scope ?? null;
+    for (const f of p.metadata?.files ?? []) this.fileInfos.set(f.id, f);
+    Object.assign(box, {
+      key: `${EDIT_KEY}${id}`, channel: p.channel_id, rhs, where: p.root_id || rhs ? "edit" : "post", spacer: Boolean(p.root_id) || rhs,
+      fileIds: postFileIds(p), preview: false, more: false, long: false, longAt: 0, error: null, saving: false,
+      before: text, now: text, empty: !text.trim(),
+    });
+    this.editInput.set_value(text);
+    this.editInput.set_selected_range({ start: text.length, end: text.length });
+    box.suggest.reset(text.length);
     this.redraw(cx);
     this.editInput.focus();
+    cx.spawn(async (cx) => {
+      await this.directory.loadRoles(cx, p.channel_id);
+      cx.notify(box.part);
+    });
+  }
+
+  isEditing(p, scope) {
+    return this.editing === p.id && (!this.editScope || !scope || this.editScope === scope);
   }
 
   findAnyPost(id) {
@@ -1915,48 +1952,73 @@ export default class Mattermost extends View {
 
   cancelEdit(cx) {
     this.editing = null;
-    this.editSuggest.reset();
+    this.editBox.key = null;
+    this.editBox.suggest.reset();
     this.redraw(cx);
   }
 
+  // Mattermost keeps the editor open until the server has taken the edit, shows its error in place, and
+  // takes an edit left with neither text nor files as asking to delete the post.
   saveEdit(cx) {
-    const id = this.editing, message = this.editInput?.value().trim();
+    const box = this.editBox, id = this.editing;
     const p = this.findAnyPost(id);
-    if (!p || !message) return;
-    if (message === p.message) return this.cancelEdit(cx);
-    const before = p.message;
-    p.message = message;
-    this.cancelEdit(cx);
+    if (!p || box.saving || this.uploads.get(box.key)?.length) return;
+    const message = this.editInput.value().trim(), file_ids = box.fileIds;
+    if (!message && !file_ids.length) {
+      this.deleteAsk = this.postMenu(p, null, { mode: "delete-post" });
+      return;
+    }
+    const was = postFileIds(p);
+    if (message === (p.message ?? "") && file_ids.length === was.length && file_ids.every((f, i) => f === was[i])) return this.cancelEdit(cx);
+    box.saving = true;
+    box.error = null;
     cx.spawn(async (cx) => {
       try {
-        await this.api(cx, `/posts/${id}/patch`, { method: "PUT", body: { message } });
+        const post = await this.api(cx, `/posts/${id}/patch`, { method: "PUT", body: { id, message, file_ids } });
+        Object.assign(p, post?.id ? post : {
+          message, file_ids, edit_at: Date.now(),
+          metadata: { ...p.metadata, files: file_ids.map((f) => this.fileInfos.get(f)).filter(Boolean) },
+        });
+        if (this.editing === id) this.cancelEdit(cx);
+        else this.redraw(cx);
       } catch (e) {
-        p.message = before;
-        this.error = String(e?.message ?? e);
-        this.redraw(cx);
+        box.error = String(e?.text || e?.message || e);
+        cx.notify(box.part);
+      } finally {
+        box.saving = false;
       }
     });
   }
 
-  editBox(p, t) {
+  buildEditBox(t) {
+    const box = this.editBox;
+    const p = this.editing && this.findAnyPost(this.editing);
+    if (!p) return div();
+    // Mattermost takes the paperclip and the files' remove buttons away from those who can't edit attachments.
+    const mayEditFiles = this.directory.can(p.channel_id, "edit_file_attachment");
+    box.canAttach = mayEditFiles && canUpload(this.clientConfig);
+    box.keepFiles = !mayEditFiles;
+    box.files = box.fileIds.length;
+    box.uploading = Boolean(this.uploads.get(box.key)?.length);
+    box.extraControls = [];
+    box.labels = null;
     const button = (id, label, primary, onClick) => div().id(id).h(32).px(16).flex().flex_none().items_center().rounded(4).cursor_pointer()
       .text_size(12).font_semibold()
       .bg(primary ? t.accent : alpha(t.accent, 0.08)).text_color(primary ? t.accent_foreground : t.accent)
       .hover((s) => s.bg(primary ? t.accent : alpha(t.accent, 0.12)))
       .on_click(onClick).child(label);
-    const text = this.editInput.value();
-    return v_flex().pt(8).gap(0)
-      .on_key_down((e, cx) => { if (e.keystroke === "escape") this.cancelEdit(cx); })
-      .child(this.editSuggest.keys(div().id("edit-box"), 16).px(16).pt(13).pb(12).rounded(4).border_1().border_color(t.input).bg(t.background)
-        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.editInput.focus(); this.editSuggest.moved(cx); })
-        .child(this.editSuggest.around(Textarea.new(this.editInput).w_full().text_size(14))))
-      .when(text.includes("@"), (el) => el.child(h_flex().pt(6).gap(4).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
-        .child(svg("mods/mattermost/icons/info.svg").size(12)).child("Editing this message with an '@mention' will not notify the recipient.")))
-      .child(h_flex().my(8).gap(8).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
+    const footer = [
+      ...(this.editInput.value().includes("@") ? [h_flex().pt(6).gap(4).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
+        .child(svg("mods/mattermost/icons/info.svg").size(12)).child("Editing this message with an '@mention' will not notify the recipient.")] : []),
+      h_flex().my(8).gap(8).items_center().text_size(12).text_color(alpha(t.foreground, 0.75))
         .child(button("edit-save", "Save", true, (_e, cx) => this.saveEdit(cx)))
         .child(button("edit-cancel", "Cancel", false, (_e, cx) => this.cancelEdit(cx)))
-        .child(div().font_bold().child("ENTER")).child(div().ml(-4).child("to Save,"))
-        .child(div().font_bold().child("ESC")).child(div().ml(-4).child("to Cancel")));
+        // Mattermost's hint is one run of text, so a narrow box wraps it word by word rather than cutting it off.
+        .child(h_flex().flex_1().min_w(0).flex_wrap().items_center().gap_x(4)
+          .children(["*ENTER", "to", "Save,", "*ESC", "to", "Cancel"].map((w) => div().when(w[0] === "*", (el) => el.font_bold()).child(w.replace("*", ""))))),
+    ];
+    return v_flex().on_key_down((e, cx) => { if (e.keystroke === "escape") this.cancelEdit(cx); })
+      .child(composerView(this, box, t, { placeholder: "Edit the post...", error: box.error, files: filePreviews(this, box, t), footer }));
   }
 
   closeThread() {
@@ -2158,6 +2220,7 @@ export default class Mattermost extends View {
       }
       case "post_deleted": {
         const post = JSON.parse(data.post);
+        if (this.editing === post.id) this.cancelEdit(cx);
         const posts = this.posts.get(post.channel_id);
         if (posts) this.posts.set(post.channel_id, posts.filter((p) => p.id !== post.id));
         const thread = this.threadPosts.get(post.root_id);
@@ -2337,7 +2400,7 @@ export default class Mattermost extends View {
       at = { x: Math.max(4, x), y };
       menu.layout = { up: y < box.y, flip: Boolean(spec.alignRight) };
     }
-    this.popupOpened(openOverlay({ mod: "mattermost", kind: "popup", frame: "none", width, height, ...(at ? { at } : {}), props: { menu, demo: this.cfg?.demo } }));
+    return this.popupOpened(openOverlay({ mod: "mattermost", kind: "popup", frame: "none", width, height, ...(at ? { at } : {}), props: { menu, demo: this.cfg?.demo } }));
   }
 
   // The popup closes in its own copy of the mod, which says so here: a post keeps its hover bar only
@@ -2345,6 +2408,7 @@ export default class Mattermost extends View {
   popupOpened(id) {
     this.keepHover = this.hoverPost;
     setShared("mattermost.popup", id);
+    return id;
   }
 
   openPicker(p, box) {
@@ -2383,9 +2447,9 @@ export default class Mattermost extends View {
     });
   }
 
-  postMenu(p, box) {
-    this.openMenu({
-      kind: "post", alignRight: true,
+  postMenu(p, box, { scope = null, mode = undefined } = {}) {
+    return this.openMenu({
+      kind: "post", alignRight: true, scope, mode,
       post: pick(p, ["id", "root_id", "channel_id", "message", "is_pinned", "user_id"]),
       saved: this.saved.has(p.id),
       following: this.following.get(p.root_id || p.id),
@@ -2439,6 +2503,11 @@ export default class Mattermost extends View {
     if (req?.id && req.id !== this.seenRequest) {
       this.seenRequest = req.id;
       cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.onRequest(req, cx)));
+    }
+    // The question takes the keyboard, and a "no" leaves the edit where it was.
+    if (this.deleteAsk && shared("mattermost.popup") !== this.deleteAsk) {
+      this.deleteAsk = null;
+      cx.timer.after(0, () => { if (this.editing) this.editInput.focus(); });
     }
     if (this.filtersOpen && shared("mattermost.popup") !== this.filtersOpen) {
       this.filtersOpen = null;
@@ -2549,9 +2618,9 @@ export default class Mattermost extends View {
       this.unfinished.delete(part);
       return list;
     }
-    const box = this.boxes.find((b) => b.part === this.parts[part]);
+    const box = this.allBoxes().find((b) => b.part === this.parts[part]);
     if (box) {
-      const el = this.buildComposer(theme(), box);
+      const el = box.edit ? this.buildEditBox(theme()) : this.buildComposer(theme(), box);
       this.unfinished.delete(part);
       return el;
     }
@@ -2831,6 +2900,7 @@ export default class Mattermost extends View {
   }
 
   boxChannel(box) {
+    if (box.edit) return box.channel;
     return this.drafts.get(box.key)?.channel_id ?? (box.thread ? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key);
   }
 
@@ -2840,10 +2910,19 @@ export default class Mattermost extends View {
   }
 
   composerChanged(key, cx) {
-    for (const box of this.boxes) if (box.key === key) cx.notify(box.part);
+    for (const box of this.allBoxes()) if (box.key === key) cx.notify(box.part);
   }
 
+  fileIdsOf(key) {
+    return key === this.editBox.key ? this.editBox.fileIds : this.drafts.get(key)?.file_ids ?? [];
+  }
+
+  // An upload that finishes after its edit was closed has no post to join, and must not become a draft.
   attachFile(key, channel_id, root_id, id, cx) {
+    if (key?.startsWith(EDIT_KEY)) {
+      if (key === this.editBox.key) this.editBox.fileIds = [...this.editBox.fileIds, id];
+      return this.composerChanged(key, cx);
+    }
     const d = this.drafts.get(key);
     const bound = this.boxes.some((b) => b.key === key);
     this.drafts.set(key, { message: "", ...d, channel_id, root_id, file_ids: [...(d?.file_ids ?? []), id], typing: d ? d.typing : bound, dirty: true, update_at: Date.now() });
@@ -2853,6 +2932,10 @@ export default class Mattermost extends View {
 
   // Taking a file off leaves it on the server, as Mattermost does; the post simply doesn't claim it.
   detachFile(key, id, cx) {
+    if (key === this.editBox.key) {
+      this.editBox.fileIds = this.editBox.fileIds.filter((x) => x !== id);
+      return this.composerChanged(key, cx);
+    }
     const d = this.drafts.get(key);
     if (!d) return;
     const next = { ...d, file_ids: (d.file_ids ?? []).filter((x) => x !== id), dirty: true, update_at: Date.now() };
@@ -2906,7 +2989,7 @@ export default class Mattermost extends View {
   // the person to the web app and back.
   setFormatHidden(where, hidden, cx) {
     this.formatHidden = { ...this.formatHidden, [where]: hidden };
-    for (const box of this.boxes) if (box.where === where) { box.more = false; cx.notify(box.part); }
+    for (const box of this.allBoxes()) if (box.where === where) { box.more = false; cx.notify(box.part); }
     if (!this.me) return;
     cx.spawn(async (cx) => {
       try {
@@ -3698,7 +3781,7 @@ export default class Mattermost extends View {
       .child(button("emoji", "smile-plus", "Add Reaction", false, popup((box) => this.openPicker(p, box))))
       .child(button("save", saved ? "bookmark-filled" : "bookmark", saved ? "Remove from Saved" : "Save Message", saved, (_e, cx) => this.toggleSave(p, cx)))
       .when(scope === "c", (el) => el.child(button("reply", "reply", "Reply", false, (_e, cx) => this.openReply(p.root_id || p.id, cx))))
-      .child(button("more", "ellipsis", "Message actions", false, popup((box) => this.postMenu(p, box))));
+      .child(button("more", "ellipsis", "Message actions", false, popup((box) => this.postMenu(p, box, { scope }))));
   }
 
   postRow(p, grouped, t, inThread, options) {
@@ -3726,7 +3809,7 @@ export default class Mattermost extends View {
     return row.children(isSystem(p) ? this.systemPost(p, t) : this.userPost(p, grouped, t, inThread, hovered, scope))
       .when(Boolean(date), (el) => el.child(this.dateLine(date, t)))
       .when(result, (el) => el.child(this.resultActions(p, t, hovered, scope)))
-      .when(hovered && !isSystem(p) && !isEphemeral(p) && this.editing !== p.id, (el) => el.child(this.postActions(p, t, key, scope, date)));
+      .when(hovered && !isSystem(p) && !isEphemeral(p) && !this.isEditing(p, scope), (el) => el.child(this.postActions(p, t, key, scope, date)));
   }
 
   // Mattermost's thread footer: who replied, latest first, the reply count, and following the thread.
@@ -3785,8 +3868,9 @@ export default class Mattermost extends View {
             .text_size(10).line_height("12px").font_semibold().text_color(t.foreground).child("BOT")))
           .child(div().flex_none().text_size(12).text_color(t.foreground).opacity(0.73).child(time))
           .when(!p.root_id && priorityEnabled(this.clientConfig) && Boolean(priorityTag(p.metadata?.priority?.priority, t)), (el) => el.child(priorityTag(p.metadata.priority.priority, t)))))
-        .children(this.editing === p.id ? [this.editBox(p, t)] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
-        .children(postFiles(this, p, t, scope))
+        .children(this.isEditing(p, scope) ? [this.editBox.part] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
+        // The files are in the editor while it's open.
+        .children(this.isEditing(p, scope) ? [] : postFiles(this, p, t, scope))
         .children(postAttachments(this, p, t, scope))
         .children(postEmbeds(this, p, t, scope))
         .when(isEphemeral(p), (el) => el.child(div().text_size(12).text_color(alpha(t.foreground, 0.56)).child("(Only visible to you)")))

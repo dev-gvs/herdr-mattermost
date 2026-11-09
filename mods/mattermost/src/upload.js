@@ -67,7 +67,7 @@ export async function chooseFiles(panel, box, cx) {
 export async function uploadFiles(panel, box, paths, cx) {
   const key = box.key, channel = panel.boxChannel(box);
   if (!key || !channel) return;
-  const room = MAX_FILES - (panel.drafts.get(key)?.file_ids?.length ?? 0) - (panel.uploads.get(key)?.length ?? 0);
+  const room = MAX_FILES - (panel.fileIdsOf(key).length) - (panel.uploads.get(key)?.length ?? 0);
   const errors = [];
   if (paths.length > room) errors.push(`Uploads limited to ${MAX_FILES} files maximum. Please use additional posts for more files.`);
   const sized = [];
@@ -126,7 +126,7 @@ async function send(panel, path, channel, cx) {
 
 // Mattermost's FilePreview: a card per file under the text, with its type and size, or how the upload goes.
 export function filePreviews(panel, box, t) {
-  const ids = panel.drafts.get(box.key)?.file_ids ?? [];
+  const ids = panel.fileIdsOf(box.key);
   const ups = panel.uploads.get(box.key) ?? [];
   if (!ids.length && !ups.length) return null;
   const card = (key, name, sub, onRemove) => h_flex().id(`fp-${key}`).relative().w(240).max_w_full().h(56).px(12).gap(12).items_center()
@@ -142,7 +142,7 @@ export function filePreviews(panel, box, t) {
   return h_flex().flex_wrap().gap(12).px(16).pt(4).pb(8)
     .children(ids.map((id) => {
       const f = panel.fileInfo(id);
-      return card(id, f?.name ?? "File", f ? `${(f.extension ?? "").toUpperCase()} ${fileSize(f.size ?? 0)}`.trim() : "", (cx) => panel.detachFile(box.key, id, cx));
+      return card(id, f?.name ?? "File", f ? `${(f.extension ?? "").toUpperCase()} ${fileSize(f.size ?? 0)}`.trim() : "", box.keepFiles ? null : (cx) => panel.detachFile(box.key, id, cx));
     }))
     .children(ups.map((u) => card(u.client, u.name, "Uploading…", null)));
 }
