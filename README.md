@@ -43,6 +43,26 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 - Save Image copies the file into your downloads folder. Save Image As… asks where through `kdialog` or `zenity` if you have one.
 - The mod runs `curl` for downloads, `xdg-open` for links and files, and `wl-copy` for Copy Image (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
 
+## Jira notifications (optional)
+
+The panel can also show your Jira Cloud notifications, like Jira's bell: a Jira row under Threads with the unread count, and a page with Direct and Watching tabs, Only show unread, and a row per notification. A click opens the issue in the browser and marks it read, and the dot on the right marks it read or unread. It's off unless you add a `jira` block to the panel's props:
+
+```json
+"props": { "jira": { "site": "https://your-site.atlassian.net", "credentials": "~/.config/jira.conf" } }
+```
+
+`credentials` is an INI file with your Atlassian account's email and an [API token](https://id.atlassian.com/manage-profile/security/api-tokens). `chmod 600` it:
+
+```ini
+[jira]
+email = you@example.com
+token = <API token>
+```
+
+The token is read from that file for each request and goes only to your Jira site. It never goes in props, the panel's own files or its log. Actors' pictures are downloaded without it. With `"demo": true`, any `jira` value shows made-up notifications.
+
+![Jira notifications](screenshots/jira.png)
+
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 
 ## Screenshots
