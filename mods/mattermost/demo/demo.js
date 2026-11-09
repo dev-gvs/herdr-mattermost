@@ -215,7 +215,7 @@ export async function demoApi(path, method, body) {
     if (route === "/channels/direct") return CHANNELS.find((c) => c.type === "D" && c.name.includes(body.find((id) => id !== ME))) ?? { id: "c-dm-sam" };
     if (route.endsWith("/files/search")) return { order: [], file_infos: {} };
     if (route.endsWith("/channels/search")) return CHANNELS.filter((c) => c.type === "O" && c.name.includes(body.term ?? ""));
-    if (route === "/roles/names") return body.map((name) => ({ name, permissions: ["use_channel_mentions", "use_group_mentions"] }));
+    if (route === "/roles/names") return body.map((name) => ({ name, permissions: ["use_channel_mentions", "use_group_mentions", "edit_file_attachment"] }));
     if (route === "/commands/execute") {
       const known = COMMANDS.some((c) => body.command.startsWith(`/${c.Suggestion}`));
       if (!known) throw Object.assign(new Error(`${method} ${route}: HTTP 404`), { status: 404, id: "api.command.execute_command.not_found.app_error", text: `Command with a trigger of '${body.command.split(" ")[0].slice(1)}' not found. To send a message beginning with "/", try adding an empty space at the beginning of the message.` });
@@ -234,7 +234,7 @@ export async function demoApi(path, method, body) {
     ...CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" })),
     { category: "custom_status", name: "recent_custom_statuses", value: JSON.stringify(RECENT_STATUSES) },
     ...(autoReset ? [{ category: "auto_reset_manual_status", name: ME, value: autoReset }] : []),
-    ...["post", "comment"].map((name) => ({ category: "advanced_text_editor", name, value: localStorage.getItem(`demo-format-${name}`) ?? "false" })),
+    ...["post", "comment", "edit"].map((name) => ({ category: "advanced_text_editor", name, value: localStorage.getItem(`demo-format-${name}`) ?? "false" })),
   ];
   if (route === `/users/${ME}/posts/flagged`) {
     const n = Number(q.get("per_page")) || 60, from = (Number(q.get("page")) || 0) * n;

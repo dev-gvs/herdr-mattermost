@@ -1,6 +1,7 @@
 // Mattermost's message box: the bordered box with the text, the formatting bar under it and the actions on
 // its right (show or hide the bar, emoji, send). Each box is a retained part, so a press on the bar redraws
-// the box and not the messages above it.
+// the box and not the messages above it. The box that edits a post in place is the same editor in Mattermost's
+// edit mode: no send button, never edge to edge, and Save and Cancel under it.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Textarea, Popup } from "gpui-base";
 import { settings } from "herdr";
@@ -52,10 +53,13 @@ export function setText(panel, box, text, start, end = start) {
   box.empty = !text.trim();
 }
 
-// The placeholder and the send button follow whether there's text. True when that changed.
-export function noteEmpty(box) {
-  const empty = !box.input.value().trim();
-  if (empty === box.empty) return false;
+// The placeholder and the send button follow whether there's text, and actions moved below a long text
+// return once it's shorter than when it outgrew them. True when the box needs drawing again.
+export function noteText(box) {
+  const value = box.input.value(), empty = !value.trim();
+  const short = Boolean(box.long) && value.length < box.longAt;
+  if (short) box.long = false;
+  if (empty === box.empty && !short) return false;
   box.empty = empty;
   return true;
 }
@@ -79,12 +83,19 @@ export function toggleFormatBar(panel, box, cx) {
   panel.setFormatHidden(box.where, !formatHidden(panel, box), cx);
 }
 
+// The preview takes the keyboard from the text box it hides, as Mattermost's preview area does, so its
+// shortcuts and Esc still reach the box.
+function focusBox(box) {
+  if (box.preview) box.previewFocus.focus();
+  else box.input.focus();
+}
+
 // The text drawn as it will post, in place of the box; the message is parsed here because a render mustn't.
 export function togglePreview(panel, box, cx) {
   if (!box.preview && (box.empty || formatHidden(panel, box))) return;
   box.preview = !box.preview;
   if (box.preview) panel.parsed(`preview-${box.name}`, box.input.value());
-  else box.input.focus();
+  focusBox(box);
   cx.notify(box.part);
 }
 
@@ -175,28 +186,37 @@ function actions(panel, box, t) {
       box.pickerAt = e.bounds ?? null;
       panel.openComposerPicker(box);
     }, { disabled: box.preview }))
-    .child(sendButton(panel, box, t, (box.empty && !box.files) || box.uploading));
+    .when(!box.edit, (el) => el.child(sendButton(panel, box, t, (box.empty && !box.files) || box.uploading)));
 }
 
-export function composerView(panel, box, t, { placeholder, error, files }) {
+export function composerView(panel, box, t, { placeholder, error, files, footer = [] }) {
   const w = (panel.width ?? 1000) / zoom();
-  const edge = w < NARROW_SCREEN;
+  const edge = !box.edit && w < NARROW_SCREEN;
   const hiddenBar = formatHidden(panel, box);
-  // With the bar hidden, the actions share the first line until the text needs more.
-  const inline = hiddenBar && !box.rhs && !box.long;
+  // With the bar hidden, the actions share the first line until the text needs more; Mattermost's
+  // formatting spacer keeps them below in a reply box.
+  const inline = hiddenBar && !files && !(box.spacer ?? box.rhs) && !box.long;
+  // The actions lie over the text's right end, so the text box wraps at the width it's drawn at and grows
+  // when it does, which tells the box to move them below.
+  const textRight = inline ? (box.actionsW ?? 190) + 14 : hiddenBar ? 16 : 48;
   // Mattermost keeps the preview's eye in the box's top right while the bar shows and there's text.
   const eye = !hiddenBar && (!box.empty || box.preview);
-  const text = box.preview ? v_flex().flex_1().min_w(0).min_h(ONE_LINE).pl(TEXT_LEFT).pr(48).pt(TEXT_TOP).pb(TEXT_BOTTOM).text_size(14)
+  const text = box.preview ? v_flex().track_focus(box.previewFocus).flex_1().min_w(0).min_h(ONE_LINE).pl(TEXT_LEFT).pr(48).pt(TEXT_TOP).pb(TEXT_BOTTOM).text_size(14)
     .children(panel.previewText(box, t)) : div().relative().flex_1().min_w(0)
     .on_size_change((size, cx) => {
       const long = size.height / zoom() > ONE_LINE + 4;
-      if (long === box.long) return;
+      if (long === Boolean(box.long)) return;
+      // Below the text the line is longer and fits again, so the actions come back only once the text is
+      // shorter than when it outgrew them.
+      const length = box.input.value().length;
+      if (!long && length >= (box.longAt ?? 0)) return;
       box.long = long;
+      box.longAt = long ? length : 0;
       cx.notify(box.part);
     })
-    .child(box.suggest.around(Textarea.new(box.input).w_full().pl(TEXT_LEFT).pr(hiddenBar ? 16 : 48).pt(TEXT_TOP).pb(TEXT_BOTTOM)
+    .child(box.suggest.around(Textarea.new(box.input).w_full().pl(TEXT_LEFT).pr(textRight).pt(TEXT_TOP).pb(TEXT_BOTTOM)
       .line_height(`${LINE}px`).rounded(0).border_0().bg(t.background).text_size(14).font_family(FONT)))
-    .when(box.empty && !box.preview, (el) => el.child(div().absolute().left(TEXT_LEFT).top(TEXT_TOP).right(16).h(LINE).truncate()
+    .when(box.empty && !box.preview, (el) => el.child(div().absolute().left(TEXT_LEFT).top(TEXT_TOP).right(textRight).h(LINE).truncate()
       .text_size(14).line_height(`${LINE}px`).text_color(alpha(t.foreground, 0.64)).child(placeholder)));
   const border = alpha(t.foreground, box.focused ? 0.32 : 0.16);
   const frame = box.suggest.keys(v_flex().id(`composer-${box.name}`), 0).relative().bg(t.background)
@@ -215,7 +235,7 @@ export function composerView(panel, box, t, { placeholder, error, files }) {
     .when(Boolean(box.canAttach), (el) => el.on_drop((e, cx) => { if (e.paths?.length) cx.spawn(async (cx) => uploadFiles(panel, box, e.paths, cx)); }))
     .on_mouse_down("left", (_e, cx) => {
       cx.stop_propagation();
-      box.input.focus();
+      focusBox(box);
       box.suggest.moved(cx);
       if (box.more) {
         box.more = false;
@@ -223,13 +243,25 @@ export function composerView(panel, box, t, { placeholder, error, files }) {
       }
     })
     .when(Boolean(box.labels), (el) => el.child(box.labels))
-    .when(inline && !files, (el) => el.child(h_flex().items_start().child(text).child(div().pt(7).pr(7).flex_none().child(actions(panel, box, t)))))
-    .when(!inline || Boolean(files), (el) => el.child(text).when(Boolean(files), (f) => f.child(files)).child(h_flex().relative().h(BAR_H).items_center()
+    .when(inline, (el) => el.child(div().relative().child(text).child(div().absolute().top(7).right(7)
+      .on_size_change((size, cx) => {
+        const w = size.width / zoom();
+        if (Math.abs(w - (box.actionsW ?? 0)) < 1) return;
+        box.actionsW = w;
+        cx.notify(box.part);
+      })
+      .child(actions(panel, box, t)))))
+    .when(!inline, (el) => el.child(text).when(Boolean(files), (f) => f.child(files)).child(h_flex().relative().h(BAR_H).items_center()
       .child(hiddenBar ? div().flex_1() : formattingBar(panel, box, t))
       .child(div().pr(7).flex_none().child(actions(panel, box, t)))))
     // Last, so it paints over the text box's own background.
     .when(eye, (el) => el.child(div().absolute().top(7).right(7).child(iconButton(`preview-${box.name}`, t, "eye-outline",
       tooltip("Show/Hide Preview", "Ctrl+Alt+P"), (_e, cx) => togglePreview(panel, box, cx), { active: box.preview }))));
+  if (box.edit) {
+    return v_flex().pt(8).font_family(FONT).child(frame)
+      .when(Boolean(error), (el) => el.child(div().pt(4).text_size(12).text_color(t.blocked).child(error)))
+      .children(footer);
+  }
   return v_flex().flex_none().px(edge ? 0 : box.rhs ? 16 : 24).pt(box.rhs ? 12 : 0).font_family(FONT)
     .child(frame)
     .child(div().h(24).flex_none().px(edge ? 16 : 0).pt(4).text_size(12).truncate().text_color(t.blocked).child(error ?? ""));
