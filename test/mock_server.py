@@ -21,7 +21,33 @@ STATE = {
     "first_name": "Sam", "team_constrained": False, "channel_constrained": False,
     "groups": [{"id": "g1", "name": "b2c_team", "allow_reference": True, "delete_at": 0, "source": "custom"}, {"id": "g2", "name": "nope", "allow_reference": False, "delete_at": 0, "source": "custom"}, {"id": "g3", "name": "ldapers", "allow_reference": True, "delete_at": 0, "source": "ldap"}],
     "channel_groups": {},
+    # Drafts as the web app would leave them, files on the server by id, and bytes a second for uploads, to watch one go up.
+    "drafts": [], "files": {}, "upload_rate": 0,
 }
+UPLOADED = {}
+
+def image_info(data):
+    """The MIME type, width and height Mattermost's server would record for an image, from its header."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n": return "image/png", *struct.unpack(">II", data[16:24])
+    if data[:6] in (b"GIF87a", b"GIF89a"): return "image/gif", *struct.unpack("<HH", data[6:10])
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP": return "image/webp", 0, 0
+    if data[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF: i += 1; continue
+            marker, size = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+            if marker in (0xC0, 0xC1, 0xC2):
+                h, w = struct.unpack(">HH", data[i + 5:i + 9]); return "image/jpeg", w, h
+            i += 2 + size
+        return "image/jpeg", 0, 0
+    return None, 0, 0
+
+def multipart_files(raw):
+    out = []
+    for part in raw.split(b"\r\n--"):
+        m = re.search(rb'filename="([^"]*)"', part)
+        if m and b"\r\n\r\n" in part: out.append((m[1].decode(), part.split(b"\r\n\r\n", 1)[1].removesuffix(b"\r\n")))
+    return out
 ME_USER = lambda: {"id": ME, "username": "sam", "roles": "system_user", "first_name": STATE["first_name"], "last_name": "G", "nickname": "", "position": "Dev", "email": "sam@x.example", "last_picture_update": 0,
                    "notify_props": STATE["notify"], "props": {"customStatus": json.dumps(custom)} if custom else {}}
 OTHER = {"id": "u2", "username": "ann", "first_name": "Ann", "last_name": "B", "nickname": "", "position": "", "last_picture_update": 0, "props": {}}
@@ -76,7 +102,11 @@ class H(BaseHTTPRequestHandler):
     def handle_any(self, method):
         if self.headers.get("Upgrade", "").lower() == "websocket": return self.websocket()
         n = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(n) if n else b""
+        rate = STATE["upload_rate"] if self.headers.get("Content-Type", "").startswith("multipart/") else 0
+        raw = b""
+        while len(raw) < n:
+            raw += self.rfile.read(min(n - len(raw), rate or n))
+            if rate: time.sleep(1)
         multipart = self.headers.get("Content-Type", "").startswith("multipart/")
         body = {"multipart": len(raw), "files": re.findall(rb'filename="([^"]*)"', raw)} if multipart else json.loads(raw) if raw else None
         if multipart: body["files"] = [f.decode() for f in body["files"]]
@@ -112,7 +142,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/teams/t1/groups": return self.send({"groups": [g for g in STATE["groups"] if g["name"] == "ldapers"], "total_group_count": 1})
         if p == "/teams/t1/groups_by_channels": return self.send({"groups": STATE["channel_groups"]})
         if re.fullmatch(rf"/users/{ME}/teams/t1/threads", p): return self.send({"threads": [], "total": 0, "total_unread_threads": 0, "total_unread_mentions": 0})
-        if p == "/users/me/teams/t1/drafts": return self.send([])
+        if p == "/users/me/teams/t1/drafts": return self.send(STATE["drafts"])
         if p == "/teams/t1/posts/search" and method == "POST": return self.send({**plist(POSTS if body["page"] == 0 else []), "matches": {}})
         if p == f"/users/{ME}/posts/flagged": return self.send(plist(POSTS[:1]))
         m = re.fullmatch(r"/channels/([^/]+)", p)
@@ -121,6 +151,8 @@ class H(BaseHTTPRequestHandler):
         if re.fullmatch(r"/channels/[^/]+/posts", p):
             ps = CHANNEL_POSTS + [post(f"p{100 + i}", "c1", m) for i, m in enumerate(STATE.get("extra", []))]
             ps = sorted(ps, key=lambda x: x["id"] == STATE.get("last"))
+            # {"post_files": {post id: [file ids from "files"]}} gives a post those files instead of its own.
+            ps = [{**x, "file_ids": ids, "metadata": {**x["metadata"], "files": [STATE["files"][f] for f in ids]}} if (ids := STATE.get("post_files", {}).get(x["id"])) else x for x in ps]
             return self.send(plist(ps if "c1" in p else [POSTS[1]] if "dclosed" in p else []))
         if re.fullmatch(r"/channels/[^/]+/stats", p): return self.send({"member_count": 2, "pinnedpost_count": 0, "files_count": 0})
         if p == "/channels/members/me/view": return self.send({"status": "OK"})
@@ -153,7 +185,7 @@ class H(BaseHTTPRequestHandler):
         if m and method == "PUT":
             if STATE.get("patch_error"): return self.send({"id": "mock.patch", "message": STATE["patch_error"]}, 400)
             old = next((x for x in CHANNEL_POSTS if x["id"] == m[1]), None) or post(m[1], "c1", "", user_id=ME)
-            files = [f for f in old["metadata"].get("files", []) if f["id"] in body.get("file_ids", [])] + [f for f in STATE["uploads"] if f["id"] in body.get("file_ids", [])]
+            files = [f for f in old["metadata"].get("files", []) + list(STATE["files"].values()) if f["id"] in body.get("file_ids", [])] + [f for f in STATE["uploads"] if f["id"] in body.get("file_ids", [])]
             np = {**old, "message": body["message"], "file_ids": body.get("file_ids", []), "metadata": {**old["metadata"], "files": files}, "edit_at": int(time.time() * 1000)}
             ev = {"event": "post_edited", "data": {"post": json.dumps(np)}, "broadcast": {"channel_id": np["channel_id"]}, "seq": 1}
             for w in list(SOCKETS):
@@ -171,11 +203,21 @@ class H(BaseHTTPRequestHandler):
         if p == "/roles/names" and STATE.get("roles") is not None: return self.send([{"name": n, "permissions": STATE["roles"]} for n in body])
         if p == "/commands/execute": return self.send({"text": "ran"})
         if p == "/files" and method == "POST":
-            infos = [{"id": "up%d" % (len(STATE["uploads"]) + i), "name": name, "extension": name.rsplit(".", 1)[-1].lower() if "." in name else "", "size": body["multipart"], "mime_type": "application/octet-stream", "width": 0, "height": 0} for i, name in enumerate(body["files"])]
+            infos = []
+            for i, (name, data) in enumerate(multipart_files(raw)):
+                mime, w, h = image_info(data)
+                fid = "up%d" % (len(STATE["uploads"]) + i)
+                UPLOADED[fid] = data
+                infos.append({"id": fid, "name": name, "extension": name.rsplit(".", 1)[-1].lower() if "." in name else "", "size": len(data), "mime_type": mime or "application/octet-stream", "width": w, "height": h, "has_preview_image": bool(mime)})
             STATE["uploads"] += infos
             return self.send({"file_infos": infos, "client_ids": []}, 201)
+        m = re.fullmatch(r"/files/([^/]+)(/preview|/thumbnail)?", p)
+        if m and m[1] in UPLOADED or m and m[1] in STATE["files"]:
+            data = UPLOADED.get(m[1]) or open(IMAGE, "rb").read()
+            self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            return
         m = re.fullmatch(r"/files/([^/]+)/info", p)
-        if m: return self.send(next((x for x in STATE["uploads"] if x["id"] == m[1]), {"id": m[1], "name": "old.txt", "extension": "txt", "size": 12}))
+        if m: return self.send(next((x for x in STATE["uploads"] if x["id"] == m[1]), STATE["files"].get(m[1], {"id": m[1], "name": "old.txt", "extension": "txt", "size": 12})))
         return self.send({"id": "mock.not_found", "message": f"mock has no {method} {p}"}, 404)
     def do_GET(self): self.handle_any("GET")
     def do_POST(self): self.handle_any("POST")

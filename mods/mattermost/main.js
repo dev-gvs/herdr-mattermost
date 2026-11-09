@@ -14,7 +14,7 @@ import { StatusDialog, DndDialog, STATUS_W, STATUS_H, DND_W, DND_H, SUGGESTIONS 
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { Suggest, Directory } from "./src/suggest.js";
 import { composerView, noteText, insertAtCaret, iconButton, takeFilePaste, FORMAT_PREF } from "./src/composer.js";
-import { filePreviews, canUpload, pasteFiles } from "./src/upload.js";
+import { filePreviews, canUpload, pasteFiles, pruneLocal } from "./src/upload.js";
 import { PriorityPicker, openPriorityPicker, priorityEnabled, priorityLabels, priorityTag, hasPriority } from "./src/priority.js";
 import { HighlightKeys, NO_KEYS } from "./src/highlight.js";
 import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statusFromCommand, firstStart, forgetStart } from "./src/reset_status.js";
@@ -205,9 +205,13 @@ function dateLabel(ms) {
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+// Mattermost's fileSizeToString: no space, whole kilobytes, and one decimal only below 10 of the larger units.
 export function fileSize(n) {
-  if (n < 1024) return `${n}B`;
-  return n < 1024 ** 2 ? `${Math.round(n / 1024)}KB` : `${(n / 1024 ** 2).toFixed(1)}MB`;
+  for (const [unit, power] of [["TB", 4], ["GB", 3], ["MB", 2]]) {
+    const size = n / 1024 ** power;
+    if (size > 1) return `${size < 10 ? Math.round(size * 10) / 10 : Math.round(size)}${unit}`;
+  }
+  return n > 1024 ? `${Math.round(n / 1024)}KB` : `${n}B`;
 }
 
 // As Mattermost's file list words it: "Wednesday at 14:24", "October 19 at 15:54".
@@ -437,6 +441,8 @@ export default class Mattermost extends View {
     this.pendingPriority = new Map();
     // Files on their way up, by draft, and what's known of the files drafts hold.
     this.uploads = new Map();
+    // Small pictures made from the files picked or pasted here, by upload and then by file id.
+    this.localThumbs = new Map();
     this.fileInfos = new Map();
     this.wantedInfos = new Set();
     this.drafts = this.readDrafts();
@@ -648,6 +654,7 @@ export default class Mattermost extends View {
       for (const s of Object.values(this.suggesters)) if (s.isOpen()) cx.notify(s.part);
       for (const box of this.allBoxes()) cx.notify(box.part);
     }
+    pruneLocal(this);
   }
 
   allBoxes() {
@@ -2915,6 +2922,7 @@ export default class Mattermost extends View {
 
   composerChanged(key, cx) {
     for (const box of this.allBoxes()) if (box.key === key) cx.notify(box.part);
+    pruneLocal(this);
   }
 
   fileIdsOf(key) {
