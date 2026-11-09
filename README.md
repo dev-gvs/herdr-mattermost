@@ -45,7 +45,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 
 ## Jira notifications (optional)
 
-The panel can also show your Jira Cloud notifications, like Jira's bell: a Jira row under Threads with the unread count, and a page with Direct and Watching tabs, Only show unread, and a row per notification. A click opens the issue in the browser and marks it read, and the dot on the right marks it read or unread. It's off unless you add a `jira` block to the panel's props:
+The panel can also show your Jira Cloud notifications, like Jira's bell: a Jira row under Threads with the unread count, and a page with Direct and Watching tabs, Only show unread, and a row per notification drawn as Jira draws it: the issue or page, its status or space, the comment, and the group of updates behind it, which a click opens. A click on a row opens the issue or page in the browser and marks it read, the dot on the right marks it read or unread, and ⋮ marks the whole tab read. It's off unless you add a `jira` block to the panel's props:
 
 ```json
 "props": { "jira": { "site": "https://your-site.atlassian.net", "credentials": "~/.config/jira.conf" } }
@@ -59,7 +59,7 @@ email = you@example.com
 token = <API token>
 ```
 
-The token is read from that file for each request and goes only to your Jira site. It never goes in props, the panel's own files or its log. Actors' pictures are downloaded without it. With `"demo": true`, any `jira` value shows made-up notifications.
+The token is read from that file for each request and goes only to your Jira site. It never goes in props, the panel's own files or its log. Issue type icons on your site are downloaded with it, as Jira's own page does; actors' pictures and icons on other hosts are downloaded without it. With `"demo": true`, any `jira` value shows made-up notifications.
 
 ![Jira notifications](screenshots/jira.png)
 

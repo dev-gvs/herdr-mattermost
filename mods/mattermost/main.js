@@ -1746,6 +1746,7 @@ export default class Mattermost extends View {
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
     else if (req.action === "edit") this.startEdit(req.post, cx);
     else if (req.action === "image") handleImageRequest(this, req, cx);
+    else if (req.action === "jira-read-all") this.jira?.markAll(req.category, cx);
     else if (req.action === "status-dialog") await this.openStatusDialog(cx);
     else if (req.action === "profile-dialog") this.openProfile();
     else if (req.action === "dnd-dialog") this.openDndDialog();

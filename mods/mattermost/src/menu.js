@@ -12,7 +12,7 @@ const icon = (name) => `mods/mattermost/icons/${name}.svg`;
 const SORTS = [["alpha", "Alphabetically"], ["recent", "Recent activity"], ["manual", "Manually"]];
 // Mattermost's menu: 36px rows, 8px above and below the list, separators with 8px around them.
 const ROW = 36, NOTE_ROW = 52, SEP = 17, PAD = 8, GAP = 2;
-const WIDTH = { category: 250, channel: 250, header: 250, post: 260, thread: 270, account: 264, image: 210 };
+const WIDTH = { category: 250, channel: 250, header: 250, post: 260, thread: 270, account: 264, image: 210, jira: 200 };
 const STATUS_ICON = { online: ["status-online", "#3db887"], away: ["status-away", "#f5ab00"], dnd: ["status-dnd", "#d24b4e"], offline: ["status-offline", "#afb3c0bf"] };
 const DND_NOTE = "Disables all notifications";
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -177,6 +177,7 @@ export class Menu {
     if (s.kind === "thread") return this.threadEntries();
     if (s.kind === "account") return this.accountEntries();
     if (s.kind === "image") return imageEntries(s, () => this.close());
+    if (s.kind === "jira") return [{ icon: "mark-read", label: "Mark all as read", disabled: !s.unread, run: () => { request("jira-read-all", { category: s.category }); this.close(); } }];
     return this.channelEntries();
   }
 

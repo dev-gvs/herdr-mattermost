@@ -56,7 +56,7 @@ fi`;
 
 // Two mixes, because a plain base-31 hash has collisions anyone can type ("Aa" and "BB"), and a collision
 // shows one URL's picture in place of another's.
-function hash(text) {
+export function hash(text) {
   let a = 0xdeadbeef, b = 0x41c6ce57;
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);

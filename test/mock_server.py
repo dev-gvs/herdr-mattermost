@@ -24,21 +24,45 @@ STATE = {
     "jira": [],
 }
 JIRA_AUTH = "Basic " + base64.b64encode(b"sam@x.example:fake-jira-token").decode()
-def jira_note(i, category, minutes, read, actor, message, key, subtype, title, comment=None):
+JIRA_ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../mods/mattermost/demo/jira")
+J = "http://127.0.0.1:18069"
+# Issue type icons sit behind the site's login, as on Jira Cloud; Confluence's page icon is public.
+JIRA_ICON_IDS = {"10318": "task", "10303": "bug", "10315": "story"}
+def jira_adf(text, link=None):
+    content = [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]
+    if link: content.append({"type": "bulletList", "content": [{"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": link, "marks": [{"type": "link", "attrs": {"href": link}}]}]}]}]})
+    return json.dumps({"type": "doc", "version": 1, "content": content})
+def jira_note(i, category, minutes, read, actor, message, where, comment=None, link=None, avatar=True):
+    page = "space" in where
+    base = f"{J}/wiki/spaces/ME/pages/{where['id']}" if page else f"{J}/browse/{where['key']}"
+    url = f"{base}?focusedCommentId=9{i[1:]}#comment-9{i[1:]}" if comment else base
     return {"notificationId": i, "category": category, "readState": "read" if read else "unread",
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(NOW / 1000 - minutes * 60)),
-            "content": {"type": "jira", "message": message, "url": f"http://127.0.0.1:18069/browse/{key}",
-                        "actor": {"displayName": actor, "avatarURL": None},
-                        "entity": {"title": title, "url": f"http://127.0.0.1:18069/browse/{key}", "contentSubtype": subtype},
-                        "bodyItems": [{"type": "comment", "document": {"format": "ADF", "data": json.dumps({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": comment}]}]})}}] if comment else []}}
+            "content": {"type": "created", "message": f"{actor} {message}", "url": url,
+                        "actor": {"displayName": actor, "avatarURL": f"{J}/jira-avatars/u-jamie.png" if avatar else None},
+                        "entity": {"title": where["title"], "url": url, "contentSubtype": None, "status": where.get("status"),
+                                   "iconUrl": f"{J}/assets/confluence-page-icon.svg" if page else f"{J}/rest/api/2/universal_avatar/view/type/issuetype/avatar/{where['icon']}?size=medium"},
+                        "path": [{"title": where["space"] if page else where["key"], "url": base}],
+                        "bodyItems": [{"type": "PRIMARY", "appearance": "PRIMARY", "document": {"format": "ADF", "data": jira_adf(comment, link)}}] if comment else []}}
+BUG12 = {"key": "BUG-12", "icon": "10303", "title": "Login loops on Android 15 after the session expires while the app is in the background", "status": "In Progress"}
+SPEC = {"space": "Mobile Engineering", "id": "777", "title": "Release 2.0 plan"}
+# Each list is a group: its head first, then the older items Jira folds under it.
 STATE["jira"] = [
-    jira_note("j1", "direct", 5, False, "Ann B", "Ann B mentioned you in a comment", "BUG-12", "Bug", "Login loops on Android 15", "@Sam G can you take a look at the logs?"),
-    jira_note("j2", "direct", 90, False, "Ann B", "changed the status to In Progress", "BUG-9", "Task", "Rotate the API keys"),
-    jira_note("j3", "direct", 26 * 60, False, "Ann B", "assigned you", "APP-3", "Story", "Dark mode for settings"),
-    jira_note("j4", "watching", 40, False, "Ann B", "commented", "APP-1", "Epic", "Release 2.0", "Moving the date by a week."),
-    jira_note("j5", "direct", 3 * 24 * 60, True, "Ann B", "created", "APP-2", "Subtask", "Write the release notes"),
+    [jira_note("j1", "direct", 5, False, "Ann B", "commented on a work item", BUG12, "@Sam G can you take a look at the logs? It starts after the token refresh.", "https://logs.x.example/search?q=session-expired&from=now-1h"),
+     jira_note("j6", "direct", 30, False, "Ann B", "updated a work item", BUG12),
+     jira_note("j7", "direct", 60, True, "Bob C", "commented on a work item", BUG12, "Seen it too.", avatar=False)],
+    [jira_note("j2", "direct", 90, False, "Automation for Jira", "assigned a work item to you", {"key": "BUG-9", "icon": "10318", "title": "Rotate the API keys", "status": "To Do"}, avatar=False)],
+    [jira_note("j3", "direct", 26 * 60, False, "Ann B", "changed the status of a work item", {"key": "APP-3", "icon": "10315", "title": "Dark mode for settings", "status": "Done"})],
+    [jira_note("j4", "watching", 40, False, "Ann B", "commented on a page", SPEC, "Moving the date by a week."),
+     jira_note("j8", "watching", 50, False, "Bob C", "updated a page", SPEC, avatar=False)],
+    [jira_note("j5", "direct", 3 * 24 * 60, True, "Ann B", "created a work item", {"key": "APP-2", "icon": "10318", "title": "Write the release notes", "status": "Backlog"})],
 ]
-def jira_feed(pick): return {"nodes": [{"headNotification": n} for n in sorted(STATE["jira"], key=lambda n: n["timestamp"], reverse=True) if pick(n)]}
+def jira_all(): return [n for g in STATE["jira"] for n in g]
+def jira_feed(pick):
+    groups = sorted((g for g in STATE["jira"] if pick(g[0])), key=lambda g: g[0]["timestamp"], reverse=True)
+    actors = lambda g: list({n["content"]["actor"]["displayName"]: n["content"]["actor"] for n in g[1:]}.values())
+    return {"nodes": [{"groupId": "g-" + g[0]["notificationId"], "groupSize": len(g), "additionalActors": actors(g), "readStates": sorted({n["readState"] for n in g}), "headNotification": g[0]} for g in groups],
+            "pageInfo": {"hasNextPage": False}}
 ME_USER = lambda: {"id": ME, "username": "sam", "first_name": STATE["first_name"], "last_name": "G", "nickname": "", "position": "Dev", "email": "sam@x.example", "last_picture_update": 0,
                    "notify_props": STATE["notify"], "props": {"customStatus": json.dumps(custom)} if custom else {}}
 OTHER = {"id": "u2", "username": "ann", "first_name": "Ann", "last_name": "B", "nickname": "", "position": "", "last_picture_update": 0, "props": {}}
@@ -102,19 +126,37 @@ class H(BaseHTTPRequestHandler):
             op, v = body.get("operationName"), body.get("variables") or {}
             if op == "JiraTenant":
                 return self.send({"data": {"tenantContexts": [{"cloudId": "mock-cloud", "activationIdByProduct": {"active": "mock-jira"}}]}})
-            if op in ("JiraFeed", "JiraRead", "JiraUnread") and v.get("ari") != "ari:cloud:jira:mock-cloud:workspace/mock-jira":
+            if op != "JiraTenant" and v.get("ari") != "ari:cloud:jira:mock-cloud:workspace/mock-jira":
                 # As the real gateway does without the routing id: an empty context.
-                return self.send({"data": {"notifications": {"direct": {"nodes": []}, "watching": {"nodes": []}, "all": {"nodes": []}}}})
+                return self.send({"data": {"notifications": {"direct": {"nodes": []}, "watching": {"nodes": []}, "all": {"nodes": []}, "notificationGroup": {"nodes": []}}}})
             if op == "JiraFeed":
                 data = {"direct": jira_feed(lambda n: n["category"] == "direct" and n["readState"] == "unread"),
                         "watching": jira_feed(lambda n: n["category"] == "watching" and n["readState"] == "unread")}
                 if v.get("all"): data["all"] = jira_feed(lambda n: n["category"] == v.get("category"))
                 return self.send({"data": {"notifications": data}})
+            if op == "JiraGroup":
+                g = next((g for g in STATE["jira"] if "g-" + g[0]["notificationId"] == v.get("groupId")), [])
+                return self.send({"data": {"notifications": {"notificationGroup": {"nodes": g}}}})
             if op in ("JiraRead", "JiraUnread"):
-                for n in STATE["jira"]:
+                for n in jira_all():
                     if n["notificationId"] in v["ids"]: n["readState"] = "read" if op == "JiraRead" else "unread"
                 return self.send({"data": {"notifications": {"markNotificationsByIdsAs" + op[4:]: "OK"}}})
+            if op == "JiraReadAll":
+                for n in jira_all():
+                    if n["category"] == v.get("category"): n["readState"] = "read"
+                return self.send({"data": {"notifications": {"markNotificationsAsRead": "OK"}}})
             return self.send({"errors": [{"message": f"mock has no operation {op}"}]}, 400)
+        m = re.fullmatch(r"/jira-avatars/(u-[a-z]+\.png)", p)
+        if m:
+            data = open(os.path.join(JIRA_ICONS, "../avatars", m[1]), "rb").read()
+            self.send_response(200); self.send_header("Content-Type", "image/png"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            return
+        m = re.fullmatch(r"/rest/api/2/universal_avatar/view/type/issuetype/avatar/(\d+)", p)
+        if (m and m[1] in JIRA_ICON_IDS) or p == "/assets/confluence-page-icon.svg":
+            if m and self.headers.get("Authorization") != JIRA_AUTH: return self.send({"message": "Unauthorized"}, 401)
+            data = open(os.path.join(JIRA_ICONS, (JIRA_ICON_IDS[m[1]] if m else "page") + ".svg"), "rb").read()
+            self.send_response(200); self.send_header("Content-Type", "image/svg+xml;charset=UTF-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            return
         if p == "/__mock":
             ev = body.pop("ws", None)
             STATE.update(body)
