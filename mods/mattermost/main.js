@@ -3726,7 +3726,7 @@ export default class Mattermost extends View {
       if (tok.custom || tok.emoji) return tok.lit ? lit(div()).child(this.emojiEl(tok, Math.round(scale * 1.3), t)) : this.emojiEl(tok, Math.round(scale * 1.3), t);
       if (tok.mention) return div().text_color(t.accent).when(Boolean(tok.lit), lit).child(tok.mention);
       return div().id(`${key}-w${i}`).when(Boolean(tok.lit), lit).when(tok.bold || line.heading > 0, (el) => el.font_bold()).when(tok.italic, (el) => el.italic()).when(tok.strike, (el) => el.line_through())
-        .when(Boolean(tok.code), (el) => el.px(4).rounded(4).bg(alpha(t.foreground, 0.08)).font_family(settings()?.font ?? "monospace").text_size(12))
+        .when(Boolean(tok.code), (el) => el.px(4).rounded(4).bg(alpha(t.foreground, 0.08)).font_family(settings()?.font_family ?? "monospace").text_size(12))
         .when(Boolean(tok.link), (el) => el.text_color(t.accent).cursor_pointer().on_click(() => openLink(tok.link)))
         .child(tok.text);
     });
