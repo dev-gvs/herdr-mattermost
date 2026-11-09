@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Mattermost in Herdr
+Comment=Opens Mattermost links in Herdr's Mattermost panel, else in the Mattermost desktop app
+Exec=herdr-mattermost-link %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/mattermost;

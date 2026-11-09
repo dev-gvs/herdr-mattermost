@@ -1,0 +1,45 @@
+#!/bin/sh
+# The system's handler for mattermost:// links: the conversation opens in Herdr's Mattermost panel when the
+# Herdr window is running and the panel can show it, else in the Mattermost desktop app, which the link
+# was meant for. The browser is never the way out, since a redirect rule there may be what sent the link.
+#
+# HERDR_MM_DESKTOP names the desktop app's .desktop file (default mattermost-desktop.desktop), and
+# HERDR_APP_HOME Herdr's home (default ~/.config/herdr-app).
+set -u
+PATH="$PATH:$HOME/.local/bin"
+link=${1:-}
+desktop=${HERDR_MM_DESKTOP:-mattermost-desktop.desktop}
+home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
+reply=
+
+# Started by its .desktop file rather than by the scheme, which would come back here.
+to_desktop() {
+  [ -n "$reply" ] && rm -f "$reply"
+  gtk-launch "$desktop" "$link" 2>/dev/null && exit 0
+  for dir in "${XDG_DATA_HOME:-$HOME/.local/share}" $(printf %s "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" | tr : ' '); do
+    [ -f "$dir/applications/$desktop" ] && gio launch "$dir/applications/$desktop" "$link" 2>/dev/null && exit 0
+  done
+  echo "herdr-mattermost-link: can't start $desktop for $link" >&2
+  exit 1
+}
+
+case $link in
+  mattermost://?*) ;;
+  *) echo "usage: herdr-mattermost-link mattermost://<server>/<path>" >&2; exit 2 ;;
+esac
+command -v herdr-app >/dev/null 2>&1 || to_desktop
+
+id=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+reply="$home/data/mattermost/links/$id"
+# The panel takes either scheme for its server, so https stands for both.
+herdr-app do "mattermost.open-link --reply $id https://${link#mattermost://}" >/dev/null 2>&1 || to_desktop
+
+# The panel says "received" at once, then "opened" or "declined" once it has asked the server.
+wait_while() {
+  i=0
+  while [ "$(cat "$reply" 2>/dev/null)" = "$1" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done
+}
+wait_while "" 30
+wait_while received 300
+[ "$(cat "$reply" 2>/dev/null)" = opened ] || to_desktop
+rm -f "$reply"

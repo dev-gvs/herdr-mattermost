@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
-import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
@@ -103,6 +103,20 @@ export const panelRequestKey = () => (props()?.demo ? "mattermost.demo-request" 
 export const requestKey = () => props()?.requestTo ?? (isPopout() ? `${panelRequestKey()}.${popoutName()}` : panelRequestKey());
 // Links come from whoever wrote the message, so only web and mail addresses go to the system's opener.
 export const openLink = (url) => { if (/^(https?|mailto):/i.test(url)) exec("xdg-open", [url]); };
+// The web app's routes to conversations. Every other page on the server (sign-in, /emoji, the admin
+// console, files, plugins, help) is left to the browser.
+const CONVERSATION = /^\/([a-z0-9\-_]+)\/(pl|channels|messages|threads)(?:\/([^/]+))?\/?$/i;
+// Mattermost's isInternalURL, taking either scheme and any trailing slash, since a link can be written by hand.
+export function serverPath(url, base) {
+  if (url.startsWith("/")) return url.replace(/[?#].*$/s, "");
+  if (!base || !/^https?:\/\//i.test(url)) return null;
+  const bare = (u) => u.replace(/^https?:\/\//i, "");
+  const b = bare(base).replace(/\/+$/, ""), u = bare(url);
+  if (u.slice(0, b.length).toLowerCase() !== b.toLowerCase()) return null;
+  const path = u.slice(b.length).replace(/[?#].*$/s, "");
+  return path === "" || path.startsWith("/") ? path : null;
+}
+const LINK_ID = /^[\w-]{1,64}$/;
 export const alpha = (color, a) => (/^#[0-9a-f]{6}$/i.test(color) ? `${color}${pad(Math.round(a * 255).toString(16))}` : color);
 // The panel assumes collapsed reply threads, so the sidebar orders and counts by root posts, as Mattermost does then.
 const lastPost = (c) => c.last_root_post_at || c.last_post_at || c.create_at;
@@ -547,6 +561,7 @@ export default class Mattermost extends View {
     if (!props()?.demo && !this.solo) {
       cx.timer.after(0, () => setShared("mattermost.alive", Date.now()));
       cx.timer.every(ALIVE_EVERY, () => setShared("mattermost.alive", Date.now()));
+      cx.spawn(async (cx) => { for (;;) this.command(await nextCommand(), cx); });
     }
 
     cx.spawn(async (cx) => {
@@ -1203,13 +1218,15 @@ export default class Mattermost extends View {
   }
 
   // Where Mattermost's /pl/ link goes: a reply opens beside its channel, and a root post shows in its channel.
-  async jump(p, cx) {
+  // A permalink clicked in a message opens a reply's thread beside the channel already open, as the web
+  // app's focusPost does with skipRedirectReplyPermalink. False when the post went to `away` instead.
+  async jump(p, cx, { beside = false, away = openLink } = {}) {
     if (this.solo) return toPanel({ action: "jump", post: pick(p, ["id", "root_id", "channel_id"]) });
     this.rhsExpanded = false;
     try {
-      if (!(await this.reachable(p, cx))) return;
-      await this.open(p.channel_id, cx);
-      if (p.root_id) return this.openReply(p.root_id, cx, p.id);
+      if (!(await this.reachable(p, cx, away))) return false;
+      if (!(beside && p.root_id)) await this.open(p.channel_id, cx);
+      if (p.root_id) { this.openReply(p.root_id, cx, p.id); return true; }
       const list = this.posts.get(p.channel_id);
       if (!list?.some((x) => x.id === p.id)) await this.loadAround(p, cx);
       const posts = this.posts.get(p.channel_id) ?? [];
@@ -1219,21 +1236,26 @@ export default class Mattermost extends View {
       this.error = e?.text ?? String(e?.message ?? e);
       this.redraw(cx);
     }
+    return true;
   }
 
-  // A closed conversation can be shown again. Anything else out of reach is left to the browser, where
-  // Mattermost asks about joining.
-  async reachable(p, cx) {
-    const id = p.channel_id;
-    if (this.channels.has(id)) return true;
-    const c = this.extraChannels.get(id);
-    if (c?.type === "D" || c?.type === "G") {
-      await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: [{ user_id: this.me.id, category: c.type === "D" ? "direct_channel_show" : "group_channel_show", name: c.type === "D" ? this.dmPeer(c) : c.id, value: "true" }] });
-      await this.loadSidebar(cx);
-    }
-    if (this.channels.has(id)) return true;
-    openLink(this.postLink(p.id, this.extraChannels.get(id)?.team_id || this.team.id));
+  // Anything out of reach is left to the browser, where Mattermost asks about joining.
+  async reachable(p, cx, away = openLink) {
+    const c = this.extraChannels.get(p.channel_id);
+    if (await this.reveal(c ?? { id: p.channel_id }, cx)) return true;
+    away(this.postLink(p.id, c?.team_id || this.team.id));
     return false;
+  }
+
+  // A closed direct or group message is shown again by its preference, as Mattermost does before going to it.
+  async reveal(c, cx) {
+    if (this.channels.has(c.id)) return true;
+    if (c.type === "D" || c.type === "G") {
+      await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: [{ user_id: this.me.id, category: c.type === "D" ? "direct_channel_show" : "group_channel_show", name: c.type === "D" ? this.dmPeer(c) : c.id, value: "true" }] });
+    }
+    // A conversation started elsewhere since the sidebar loaded is new to it.
+    await this.loadSidebar(cx);
+    return this.channels.has(c.id);
   }
 
   // Posts between this one and the newest may number in the thousands, too many to page through and keep.
@@ -1721,18 +1743,101 @@ export default class Mattermost extends View {
     });
   }
 
-  // Where a command wants to take you: a conversation here when it's on this server, else the browser.
-  async goTo(url, cx) {
-    const path = url.startsWith("/") ? url : url.startsWith(this.cfg.url) ? url.slice(this.cfg.url.length) : null;
-    if (path === null) return openLink(url);
-    const [, kind, name] = /^\/[^/]+\/(channels|messages)\/([^/?#]+)/.exec(path) ?? [];
-    if (!kind) return;
-    const find = () => [...this.channels.values()].find((c) => (name.startsWith("@")
-      ? c.type === "D" && this.users.get(this.dmPeer(c))?.username === name.slice(1)
-      : c.name === name));
-    if (!find()) { await this.loadSidebar(cx); this.rows = null; }
-    const c = find();
-    if (c) await this.open(c.id, cx);
+  follow(url, cx) {
+    cx.spawn(async (cx) => this.goTo(url, cx));
+  }
+
+  // Mattermost's handleFormattedTextClick and its router: a link to a conversation on this server opens
+  // here, and any other link, or a conversation the panel can't show, goes to `away` (the browser).
+  // True when it opened here.
+  async goTo(url, cx, away = openLink) {
+    let sent = false;
+    const out = (link) => { sent = true; away(link); };
+    const path = serverPath(url, this.cfg?.url);
+    const full = url.startsWith("/") ? `${this.cfg?.url ?? ""}${url}` : url;
+    const [, team, kind, id] = (path !== null && CONVERSATION.exec(path)) || [];
+    let ident = null;
+    try { ident = id && decodeURIComponent(id).toLowerCase(); } catch {}
+    if (!kind || (kind !== "threads" && !ident)) { out(full); return false; }
+    if (this.solo) { toPanel({ action: "link", url: full }); return true; }
+    try {
+      if (!(await this.route(team.toLowerCase(), kind, ident, out, cx)) && !sent) out(full);
+    } catch (e) {
+      // Not there or not yours: the web app shows its error page, and the browser does as well.
+      if (e?.status === 403 || e?.status === 404) out(full);
+      else {
+        this.error = e?.text ?? String(e?.message ?? e);
+        this.redraw(cx);
+      }
+    }
+    return !sent;
+  }
+
+  // False when the link is for the browser. A post out of reach goes to `away` from jump, at its own team.
+  async route(teamName, kind, ident, away, cx) {
+    const team = this.teams?.find((t) => t.name === teamName && !t.delete_at);
+    if (!team || !this.me) return false;
+    if (kind === "threads" && !ident) {
+      if (team.id !== this.team.id) return false;
+      this.openThreads(cx);
+      return true;
+    }
+    if (kind === "pl" || kind === "threads") {
+      const p = await this.api(cx, `/posts/${encodeURIComponent(ident)}`);
+      await this.fetchExtraChannels(cx, [p]);
+      if (kind === "pl") return this.jump(p, cx, { beside: true, away });
+      if (!(await this.reachable(p, cx, away))) return false;
+      this.openThreads(cx);
+      await this.openThread(p.root_id || p.id, cx);
+      return true;
+    }
+    const c = await this.conversation(team, kind, ident, cx);
+    if (!c || !(await this.reveal(c, cx))) return false;
+    await this.open(c.id, cx);
+    return true;
+  }
+
+  // Mattermost's getPathFromIdentifier: after /channels/ a channel's name or id, a group's name or a pair
+  // of user ids; after /messages/ @username, an email, a user id or a group's name. A direct message is
+  // started if there's none yet, as the web app does.
+  async conversation(team, kind, ident, cx) {
+    const known = () => [...this.channels.values(), ...this.extraChannels.values()].find((c) => c.name === ident || c.id === ident);
+    const direct = async (user) => user && this.api(cx, "/channels/direct", { method: "POST", body: [this.me.id, user.id] });
+    const pair = /^([a-z0-9]{26})__([a-z0-9]{26})$/.exec(ident);
+    if (kind === "messages") {
+      if (ident.startsWith("@")) return direct(await this.api(cx, `/users/username/${encodeURIComponent(ident.slice(1))}`));
+      if (ident.includes("@")) return direct(await this.api(cx, `/users/email/${encodeURIComponent(ident)}`));
+      if (ident.length === 26) return direct(await this.api(cx, `/users/${ident}`));
+      if (ident.length !== 40) return null;
+    } else if (pair) {
+      if (pair[1] !== this.me.id && pair[2] !== this.me.id) return null;
+      return direct({ id: pair[1] === this.me.id ? pair[2] : pair[1] });
+    }
+    if (known()) return known();
+    if (ident.length === 26) return this.api(cx, `/channels/${ident}`).catch((e) => (e?.status === 404 ? null : Promise.reject(e)))
+      .then((c) => c ?? this.api(cx, `/teams/${team.id}/channels/name/${encodeURIComponent(ident)}?include_deleted=true`));
+    return this.api(cx, `/teams/${team.id}/channels/name/${encodeURIComponent(ident)}?include_deleted=true`);
+  }
+
+  // `herdr-app do 'mattermost.open-link [--reply ID] URL'`, sent by the handler for mattermost:// links.
+  // Herdr hands a mod only the command's name, so the address travels in it. Every copy on screen hears
+  // it, and the first panel answers. With --reply the browser isn't a way out, since a redirect rule there
+  // may be what sent the link: the answer goes to data/mattermost/links/ID and the handler decides.
+  command(c, cx) {
+    const [name, ...args] = c.trim().split(/\s+/);
+    if (name !== "open-link" || [...OWNERS.values()].find((o) => !o.solo && !o.cfg?.demo) !== this) return;
+    const reply = args[0] === "--reply" && LINK_ID.test(args[1] ?? "") ? args.splice(0, 2)[1] : null;
+    const answer = (word) => reply && exec("sh", ["-c", 'mkdir -p "$1" && printf %s "$3" > "$1/.$2" && mv -f "$1/.$2" "$1/$2"', "sh", `${appHome()}/data/mattermost/links`, reply, word]).catch(() => {});
+    answer("received");
+    cx.spawn(async (cx) => {
+      for (let i = 0; i < 40 && !(this.me && this.team); i++) await sleep(cx, 250);
+      let opened = false;
+      if (this.me && this.team && args.length === 1) opened = await this.goTo(args[0], cx, reply ? () => {} : openLink);
+      else if (!reply && args.length === 1) openLink(args[0]);
+      // Herdr's own command for this raises the window it is already running in.
+      if (opened) exec("herdr-app", []).catch(() => {});
+      await answer(opened ? "opened" : "declined");
+    });
   }
 
   addEphemeral(d, message, cx) {
@@ -1801,6 +1906,7 @@ export default class Mattermost extends View {
     if (req.action === "reply") this.openReply(req.post, cx);
     else if (req.action === "mention-filters") this.applyMentionFilters(req.filters, req.team, cx);
     else if (req.action === "jump") await this.jump(req.post, cx);
+    else if (req.action === "link") await this.goTo(req.url, cx);
     else if (req.action === "drafts") takeDrafts(this, req.changes, cx);
     else if (req.action === "threads") this.openThreads(cx);
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
@@ -3376,7 +3482,7 @@ export default class Mattermost extends View {
         .child(svg(`mods/mattermost/icons/${icon}.svg`).size(20)).child(div().text_size(12).font_semibold().child(label));
       const section = (title) => div().pt(16).pb(4).text_size(12).font_bold().text_color(alpha(t.foreground, 0.75)).child(title.toUpperCase());
       const md = (id, text) => TextView.markdown(id, prepare(text, this.text)).selectable(true)
-        .on_link_click((url) => openLink(url));
+        .on_link_click((url, cx) => this.follow(url, cx));
       // Mattermost shows a pencil while the pointer is over the field; an empty field is itself the way to add one.
       const editable = (field) => {
         const pencil = this.editHover === field ? [svg("mods/mattermost/icons/pencil.svg").size(14).flex_none().mt(3).text_color(t.muted)] : [];
@@ -3453,7 +3559,7 @@ export default class Mattermost extends View {
         const thumb = f.has_preview_image && this.media.thumb(f.id);
         return h_flex().id(`file-${f.id}`).mx(12).my(4).px(12).py(10).gap(12).items_center().rounded(6).border_1().border_color(t.border)
           .cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click(() => exec("xdg-open", [`${this.cfg.url}/${this.team.name}/pl/${f.post_id}`]))
+          .on_click((_e, cx) => this.follow(`${this.cfg.url}/${this.team.name}/pl/${f.post_id}`, cx))
           .child(thumb ? image(thumb).size(40).flex_none().rounded(4)
             : div().size(40).flex_none().rounded(4).bg(t.raised).flex().items_center().justify_center().text_size(10).font_semibold().text_color(t.muted).child((f.extension || "file").toUpperCase().slice(0, 4)))
           .child(v_flex().min_w(0).gap(2)
@@ -3727,7 +3833,7 @@ export default class Mattermost extends View {
       if (tok.mention) return div().text_color(t.accent).when(Boolean(tok.lit), lit).child(tok.mention);
       return div().id(`${key}-w${i}`).when(Boolean(tok.lit), lit).when(tok.bold || line.heading > 0, (el) => el.font_bold()).when(tok.italic, (el) => el.italic()).when(tok.strike, (el) => el.line_through())
         .when(Boolean(tok.code), (el) => el.px(4).rounded(4).bg(alpha(t.foreground, 0.08)).font_family(settings()?.font_family ?? "monospace").text_size(12))
-        .when(Boolean(tok.link), (el) => el.text_color(t.accent).cursor_pointer().on_click(() => openLink(tok.link)))
+        .when(Boolean(tok.link), (el) => el.text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.follow(tok.link, cx)))
         .child(tok.text);
     });
     return h_flex().flex_wrap().items_center().min_h(20).my(2).pl(line.indent * 6).text_size(scale)
@@ -3754,7 +3860,7 @@ export default class Mattermost extends View {
       const id = i ? `${key}-${i}` : key;
       if (part.line) return this.emojiLine(id, part.line, t, part.labelled ? this.editedLabel(p, t) : null);
       if (part.image) return div().py(2).child(remoteImage(this, id, part.image.url, p, { ...part.image, maxW }, t));
-      const text = TextView.markdown(`md-${id}`, part.md).selectable(true).on_link_click((url) => openLink(url));
+      const text = TextView.markdown(`md-${id}`, part.md).selectable(true).on_link_click((url, cx) => this.follow(url, cx));
       // A TextView in a row is as wide as its text, so the label follows the line, and wraps under it when the line fills the row.
       return part.labelled ? h_flex().flex_wrap().items_center().gap_x(4).when(part.gap, (el) => el.mt(PARAGRAPH_GAP))
         .child(div().max_w_full().child(text)).child(this.editedLabel(p, t)) : text;
