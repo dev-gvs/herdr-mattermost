@@ -18,6 +18,7 @@ import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statu
 import { FiltersMenu, NO_FILTERS, hasMentionFilters, mentionKeysForTypes, mentionQuery, filterChips } from "./src/mentions.js";
 import { openOwnOverlay as openOverlay, isPopout, popoutName, openPopout, loadPopout, handDrafts, takeDrafts, toPanel, isExpandKey, rhsExpandKey, shrinkOnPress, rhsButtons, filtersButton, BACK_TIPS, POPOUT_TIP } from "./src/rhs.js";
 import { demoApi, demoStatus, DEMO } from "./demo/demo.js";
+import { JIRA, jiraFor } from "./src/jira.js";
 
 const PAGE = 60;
 const THREAD_PAGE = 30;
@@ -334,6 +335,7 @@ export default class Mattermost extends View {
     this.threadTotals = { total_unread_threads: 0, total_unread_mentions: 0 };
     this.solo = isPopout();
     this.selected = this.solo ? null : localStorage.getItem("selected");
+    this.jira = this.solo ? null : jiraFor(this, cx);
     this.thread = null;
     this.live = false;
     this.busy = 0;
@@ -726,8 +728,10 @@ export default class Mattermost extends View {
       await this.loadDrafts(cx);
       return loadPopout(this, cx);
     }
+    // The page stays selected across restarts, and the prop may be gone since.
+    if (this.selected === JIRA && !this.jira) this.selected = null;
     const wanted = props()?.channel;
-    if (wanted && !this.selected) this.selected = wanted === THREADS || wanted === DRAFTS ? wanted : [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
+    if (wanted && !this.selected) this.selected = wanted === THREADS || wanted === DRAFTS || wanted === JIRA ? wanted : [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
     await this.loadDrafts(cx);
     if (props()?.thread && !this.thread) await this.openThread(props().thread, cx);
     if (this.selected === THREADS) await this.loadThreads(cx);
@@ -2417,7 +2421,10 @@ export default class Mattermost extends View {
         this.setHover(on, cx);
       })
       .on_hover((on, cx) => { if (!on) this.setHover(null, cx); })
-      .when(!this.solo, (el) => el.on_key_down((e, cx) => { if (isExpandKey(e.keystroke)) rhsExpandKey(this, cx); }))
+      .when(!this.solo, (el) => el.on_key_down((e, cx) => {
+        if (this.jira?.onKey(e, cx)) return;
+        if (isExpandKey(e.keystroke)) rhsExpandKey(this, cx);
+      }))
       .when(this.frame, (el) => el.rounded(10).overflow_hidden().bg(t.background).border_1()
         .border_color(this.typing ? t.accent : t.border).track_focus(this.focus).focus((s) => s.border_color(t.accent))
         // A press that reaches the frame focuses the panel, as a pane takes the keyboard when clicked;
@@ -2493,6 +2500,7 @@ export default class Mattermost extends View {
     if (this.thread) return "thread";
     if (this.selected === THREADS) return "threads";
     if (this.selected === DRAFTS) return "drafts";
+    if (this.selected === JIRA && this.jira) return "jira";
     return this.selected && this.channels.has(this.selected) ? "chat" : null;
   }
 
@@ -2542,6 +2550,7 @@ export default class Mattermost extends View {
     }
     if (kind === "threads") return this.threadsView(t, wide);
     if (kind === "drafts") return this.draftsView(t, wide);
+    if (kind === "jira") return this.jira.page(t, wide);
     return !wide ? div() : v_flex().flex_1().h_full().items_center().justify_center().text_color(t.dim)
       .child(this.error ?? (this.channels.size ? "Pick a channel" : ""));
   }
@@ -2569,6 +2578,7 @@ export default class Mattermost extends View {
         .child(this.slot(svg("mods/mattermost/icons/threads.svg").size(14).text_color(active || unreadThreads ? t.foreground : t.muted)))
         .child(div().flex_1().text_color(active || unreadThreads ? t.foreground : t.muted).when(unreadThreads > 0, (el) => el.font_semibold()).child("Threads"))
         .when(threadMentions > 0, (el) => el.child(this.badge(threadMentions, t)))))
+      .when(Boolean(this.jira), (el) => el.child(this.jira.sidebarRow(t)))
       // Mattermost lists Drafts only while there are some, or while its page is open.
       .when(draftCount > 0 || this.selected === DRAFTS, (el) => el.child(div().pb(2).flex_none().child(h_flex().id("drafts").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
         .when(draftsActive, (el) => el.bg(t.selected).child(this.activeBar(t))).hover((s) => s.bg(draftsActive ? t.selected : t.hover))
