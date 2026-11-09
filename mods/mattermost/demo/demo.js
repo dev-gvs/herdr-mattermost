@@ -204,6 +204,8 @@ export async function demoApi(path, method, body) {
     if (route === `/users/${ME}/preferences` && body[0]?.category === "flagged_post") { saved.add(body[0].name); return {}; }
     if (route === `/users/${ME}/preferences/delete` && body[0]?.category === "flagged_post") { saved.delete(body[0].name); return {}; }
     if (route === `/users/${ME}/preferences` && body[0]?.category === "auto_reset_manual_status") { autoReset = body[0].value; return {}; }
+    // The formatting bar's preferences outlive the demo's other state, so hiding it can be seen to stick.
+    if (route === `/users/${ME}/preferences` && body[0]?.category === "advanced_text_editor") { localStorage.setItem(`demo-format-${body[0].name}`, body[0].value); return {}; }
     if (route === `/teams/${TEAM.id}/posts/search`) {
       const from = (body.page ?? 0) * (body.per_page ?? 20);
       return { ...pageOf(newestFirst(MENTIONS.filter(matchesSearch(body.terms))).slice(from, from + (body.per_page ?? 20))), matches: {} };
@@ -224,7 +226,7 @@ export async function demoApi(path, method, body) {
   let m;
   if (route === "/users/me") return USERS[0];
   if (route === "/users/me/teams") return [TEAM];
-  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true", EnableCustomGroups: "true", EnableCustomEmoji: "true", EnableCustomUserStatuses: "true", BuildEnterpriseReady: "true", EnablePublicLink: "true", ...ACCOUNT_CONFIG };
+  if (route === "/config/client") return { EnableJoinLeaveMessageByDefault: "false", AllowSyncedDrafts: "true", EnableCustomGroups: "true", EnableCustomEmoji: "true", EnableCustomUserStatuses: "true", BuildEnterpriseReady: "true", EnablePublicLink: "true", PostPriority: "true", PostAcknowledgements: "true", EnableFileAttachments: "true", ...ACCOUNT_CONFIG };
   if ((m = route.match(/^\/files\/([^/]+)\/link$/))) return { link: `https://demo.invalid/files/${m[1]}/public?h=demo` };
   if (route === `/users/me/teams/${TEAM.id}/drafts`) return DRAFTS;
   if (route === "/users/me/preferences/flagged_post") return [...saved].map((name) => ({ category: "flagged_post", name, value: "true" }));
@@ -232,6 +234,7 @@ export async function demoApi(path, method, body) {
     ...CHANNELS.filter((c) => c.type === "D").map((c) => ({ category: "direct_channel_show", name: c.name.split("__")[1], value: "true" })),
     { category: "custom_status", name: "recent_custom_statuses", value: JSON.stringify(RECENT_STATUSES) },
     ...(autoReset ? [{ category: "auto_reset_manual_status", name: ME, value: autoReset }] : []),
+    ...["post", "comment"].map((name) => ({ category: "advanced_text_editor", name, value: localStorage.getItem(`demo-format-${name}`) ?? "false" })),
   ];
   if (route === `/users/${ME}/posts/flagged`) {
     const n = Number(q.get("per_page")) || 60, from = (Number(q.get("page")) || 0) * n;

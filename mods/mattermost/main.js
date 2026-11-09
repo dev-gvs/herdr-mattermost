@@ -13,6 +13,9 @@ import { ProfileDialog, openProfileDialog } from "./src/profile.js";
 import { StatusDialog, DndDialog, STATUS_W, STATUS_H, DND_W, DND_H, SUGGESTIONS } from "./src/status.js";
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { Suggest, Directory } from "./src/suggest.js";
+import { composerView, noteEmpty, insertAtCaret, iconButton, FORMAT_PREF } from "./src/composer.js";
+import { filePreviews, canUpload } from "./src/upload.js";
+import { PriorityPicker, openPriorityPicker, priorityEnabled, priorityLabels, priorityTag, hasPriority } from "./src/priority.js";
 import { HighlightKeys, NO_KEYS } from "./src/highlight.js";
 import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statusFromCommand, firstStart, forgetStart } from "./src/reset_status.js";
 import { FiltersMenu, NO_FILTERS, hasMentionFilters, mentionKeysForTypes, mentionQuery, filterChips } from "./src/mentions.js";
@@ -312,6 +315,10 @@ export default class Mattermost extends View {
       this.popup = new Switcher(this, cx);
       return;
     }
+    if (props()?.priorityPicker) {
+      this.popup = new PriorityPicker();
+      return;
+    }
     if (props()?.picker) {
       this.cfgReady = config().then((cfg) => { this.cfg = cfg; });
       this.popup = new EmojiPicker(this, cx);
@@ -413,15 +420,25 @@ export default class Mattermost extends View {
     // Indigo's mention highlight, until the person's Mattermost theme says otherwise.
     this.mentionBg = "#133a91";
 
-    this.input = TextareaState.new({ placeholder: "Message" });
-    this.replyInput = TextareaState.new({ placeholder: "Reply to this thread..." });
-    this.threadInput = TextareaState.new({ placeholder: "Reply to this thread..." });
-    // The boxes are reused, so `key` says whose draft each one holds right now; see bindDrafts.
+    // The boxes draw their own placeholder, since it names the channel and a text state's is fixed.
+    this.input = TextareaState.new();
+    this.replyInput = TextareaState.new();
+    this.threadInput = TextareaState.new();
+    // The boxes are reused, so `key` says whose draft each one holds right now; see bindDrafts. `where` names
+    // Mattermost's preference for showing the formatting bar: the thread page shares the channel's, and only
+    // the right-hand side's reply box narrows its bar by the right-hand side's widths.
     this.boxes = [
-      { input: this.input, thread: false, key: null },
-      { input: this.replyInput, thread: true, key: null },
-      { input: this.threadInput, thread: true, key: null },
+      { input: this.input, thread: false, key: null, name: "post", where: "post", rhs: false },
+      { input: this.replyInput, thread: true, key: null, name: "reply", where: "comment", rhs: true },
+      { input: this.threadInput, thread: true, key: null, name: "thread", where: "post", rhs: false },
     ];
+    this.formatHidden = { post: false, comment: false };
+    // A priority chosen before there's any text, which has no draft to live in yet.
+    this.pendingPriority = new Map();
+    // Files on their way up, by draft, and what's known of the files drafts hold.
+    this.uploads = new Map();
+    this.fileInfos = new Map();
+    this.wantedInfos = new Set();
     this.drafts = this.readDrafts();
     this.pushing = new Set();
     this.draftAsk = null;
@@ -451,13 +468,17 @@ export default class Mattermost extends View {
         channel: box.thread ? this.drafts.get(box.key)?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key,
         root: box.thread ? box.key : "",
       }), { execute: (cx) => this.send(box, cx) });
-      box.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
-      box.input.on("blur", (_e, cx) => { this.typing = false; box.suggest.blur(cx); cx.notify(); });
+      box.part = this.parts[`composer-${box.name}`] = cx.new(Part, { owner: this.ownerKey, part: `composer-${box.name}` });
+      box.suggest.host = box.part;
+      box.empty = true;
+      box.input.on("focus", (_e, cx) => { this.typing = box.focused = true; cx.notify(); cx.notify(box.part); });
+      box.input.on("blur", (_e, cx) => { this.typing = box.focused = false; box.suggest.blur(cx); cx.notify(); cx.notify(box.part); });
       box.input.on("change", (_e, cx) => {
         box.before = box.now;
         box.now = box.input.value();
         this.noteDraft(box);
         box.suggest.changed(cx);
+        if (noteEmpty(box)) cx.notify(box.part);
       });
       box.input.on("submit", (e, cx) => {
         if (e.shift) return;
@@ -492,6 +513,7 @@ export default class Mattermost extends View {
       const t = theme(), look = `${t.background}${t.foreground}${t.accent}${t.border}`;
       this.publishBadge();
       this.saveDrafts();
+      if (this.wantedInfos.size && this.me) cx.spawn(async (cx) => this.loadFileInfos(cx));
       if (look !== this.look) {
         if (this.look) this.redraw(cx);
         this.look = look;
@@ -609,6 +631,7 @@ export default class Mattermost extends View {
       cx.notify(this.sidePart);
       cx.notify(this.mainPart);
       for (const s of Object.values(this.suggesters)) if (s.isOpen()) cx.notify(s.part);
+      for (const box of this.boxes) cx.notify(box.part);
     }
   }
 
@@ -751,6 +774,7 @@ export default class Mattermost extends View {
     this.teamsOrder = prefs.find((x) => x.category === "teams_order")?.value ?? "";
     this.skinTone = prefs.find((x) => x.category === "emoji" && x.name === "emoji_skintone")?.value ?? "default";
     this.autoResetPref = prefs.find((x) => x.category === "auto_reset_manual_status" && x.name === this.me.id)?.value ?? "";
+    this.formatHidden = Object.fromEntries(["post", "comment"].map((name) => [name, prefs.some((x) => x.category === FORMAT_PREF && x.name === name && x.value === "true")]));
     try {
       this.recentEmoji = new Set(JSON.parse(prefs.find((x) => x.category === "recent_emojis" && x.name === this.me.id)?.value ?? "[]").map((r) => r.name));
     } catch {}
@@ -1498,6 +1522,8 @@ export default class Mattermost extends View {
     box.shown = box.before = box.now = box.input.value();
     box.suggest.reset();
     box.key = key;
+    box.empty = !box.now.trim();
+    box.preview = false;
   }
 
   leaveDraft(box, cx) {
@@ -1519,9 +1545,13 @@ export default class Mattermost extends View {
     box.shown = value;
     if ((old?.message ?? "") === message) return;
     const next = { ...old, channel_id, root_id: box.thread ? box.key : "", message, dirty: true, update_at: Date.now() };
+    if (!old && this.pendingPriority.has(box.key)) next.priority = this.pendingPriority.get(box.key);
+    this.pendingPriority.delete(box.key);
     next.typing = !draftEmpty(next) && (!old || draftEmpty(old) || Boolean(old.typing));
-    if (draftEmpty(next) && !old?.remote) this.drafts.delete(box.key);
-    else this.drafts.set(box.key, next);
+    if (draftEmpty(next) && !old?.remote) {
+      this.drafts.delete(box.key);
+      if (hasPriority(old?.priority)) this.pendingPriority.set(box.key, old.priority);
+    } else this.drafts.set(box.key, next);
     this.draftsTouched = true;
   }
 
@@ -1591,8 +1621,9 @@ export default class Mattermost extends View {
 
   clearDraft(key, cx, keepFiles = false) {
     const d = this.drafts.get(key);
+    this.pendingPriority.delete(key);
     if (d?.remote || (keepFiles && d?.file_ids?.length)) {
-      this.drafts.set(key, { ...d, message: "", file_ids: keepFiles ? d.file_ids : [], typing: false, dirty: true, update_at: Date.now() });
+      this.drafts.set(key, { ...d, message: "", file_ids: keepFiles ? d.file_ids : [], priority: undefined, typing: false, dirty: true, update_at: Date.now() });
       this.pushDraft(key, cx);
     } else this.drafts.delete(key);
     this.draftsTouched = true;
@@ -1614,7 +1645,7 @@ export default class Mattermost extends View {
         if (command) await this.runCommand(d, cx);
         else await this.api(cx, "/posts", { method: "POST", body: {
           channel_id: d.channel_id, root_id: d.root_id, message: d.message.trim(), file_ids: d.file_ids ?? [], props: d.props ?? {},
-          ...(d.priority ? { metadata: { priority: d.priority } } : {}),
+          ...(hasPriority(d.priority) ? { metadata: { priority: d.priority } } : {}),
         } });
       } catch (e) {
         const now = this.drafts.get(key), bound = this.boxes.some((b) => b.key === key);
@@ -1745,6 +1776,11 @@ export default class Mattermost extends View {
     else if (req.action === "threads") this.openThreads(cx);
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
     else if (req.action === "edit") this.startEdit(req.post, cx);
+    else if (req.action === "priority") this.setPriority(req.key, req.priority, cx);
+    else if (req.action === "insert-emoji") {
+      const box = this.boxes.find((b) => b.name === req.box);
+      if (box) { insertAtCaret(this, box, req.text); cx.notify(box.part); }
+    }
     else if (req.action === "image") handleImageRequest(this, req, cx);
     else if (req.action === "jira-read-all") this.jira?.markAll(req.category, cx);
     else if (req.action === "status-dialog") await this.openStatusDialog(cx);
@@ -2020,6 +2056,7 @@ export default class Mattermost extends View {
   }
 
   send(box, cx) {
+    if (this.uploads.get(box.key)?.length) return;
     this.noteDraft(box);
     const d = this.drafts.get(box.key);
     if (!d || draftEmpty(d)) return;
@@ -2426,6 +2463,10 @@ export default class Mattermost extends View {
         if (this.jira?.onKey(e, cx)) return;
         if (isExpandKey(e.keystroke)) rhsExpandKey(this, cx);
       }))
+      // A press anywhere else closes a formatting bar's row of hidden controls, as a press outside a menu does.
+      .on_mouse_down("left", (_e, cx) => {
+        for (const box of this.boxes) if (box.more) { box.more = false; cx.notify(box.part); }
+      })
       .when(this.frame, (el) => el.rounded(10).overflow_hidden().bg(t.background).border_1()
         .border_color(this.typing ? t.accent : t.border).track_focus(this.focus).focus((s) => s.border_color(t.accent))
         // A press that reaches the frame focuses the panel, as a pane takes the keyboard when clicked;
@@ -2516,6 +2557,12 @@ export default class Mattermost extends View {
       const list = this.suggesters[part].list(theme());
       this.unfinished.delete(part);
       return list;
+    }
+    const box = this.boxes.find((b) => b.part === this.parts[part]);
+    if (box) {
+      const el = this.buildComposer(theme(), box);
+      this.unfinished.delete(part);
+      return el;
     }
     this.renderStart = Date.now();
     this.shortened = false;
@@ -2768,18 +2815,131 @@ export default class Mattermost extends View {
     for (const box of this.boxes) box.input.set_auto_grow(1, rows);
   }
 
-  composer(t, input = this.input) {
-    const box = this.boxes.find((b) => b.input === input);
+  // Each box is a part of its own, notified by its own events and by every redraw.
+  composer(_t, input = this.input) {
+    return this.boxes.find((b) => b.input === input).part;
+  }
+
+  buildComposer(t, box) {
     const d = this.drafts.get(box.key);
-    // Uploading isn't built, but a draft started in the web app can hold files, and they go with it.
-    const files = d?.file_ids?.length ?? 0;
-    return v_flex().flex_none()
-      .when(Boolean(this.error), (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.blocked).child(this.error)))
-      .when(files > 0, (el) => el.child(div().px(14).pb(4).text_size(12).text_color(t.muted).child(`Sends with ${plural(files, "attachment", "attachments")} from this draft`)))
-      // A bar like the headers at the top, on one line with the sidebar's footer.
-      .child(box.suggest.keys(div().id("composer"), 0).flex().items_center().min_h(BAR_H).border_t(1).border_color(t.border)
-        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); box.suggest.moved(cx); })
-        .child(box.suggest.around(Textarea.new(input).w_full().px(12).py(7).line_height(`${BOX_LINE}px`).rounded(0).border_0().bg(t.background).text_size(13))));
+    box.files = d?.file_ids?.length ?? 0;
+    box.uploading = Boolean(this.uploads.get(box.key)?.length);
+    box.canAttach = canUpload(this.clientConfig);
+    const c = this.channels.get(box.thread ? d?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key);
+    // Mattermost offers priority on a channel's own box only, never on a reply.
+    const priority = !box.thread && priorityEnabled(this.clientConfig);
+    box.extraControls = priority ? [iconButton(`prio-${box.name}`, t, "alert-circle-outline", "Message priority", (e) => openPriorityPicker(this, box, e.bounds), { disabled: box.preview })] : [];
+    box.labels = priority ? priorityLabels(this.priorityOf(box.key), t, (cx) => this.setPriority(box.key, null, cx)) : null;
+    return composerView(this, box, t, {
+      placeholder: box.thread || !c ? "Reply to this thread..." : `Write to ${this.channelName(c)}`,
+      error: this.error,
+      files: filePreviews(this, box, t),
+    });
+  }
+
+  previewText(box, t) {
+    return this.richText(`preview-${box.name}`, box.input.value(), t, { metadata: {} }, (box.width ?? 600) - 64, NO_KEYS);
+  }
+
+  boxChannel(box) {
+    return this.drafts.get(box.key)?.channel_id ?? (box.thread ? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key);
+  }
+
+  showError(text, cx) {
+    this.error = text;
+    this.redraw(cx);
+  }
+
+  composerChanged(key, cx) {
+    for (const box of this.boxes) if (box.key === key) cx.notify(box.part);
+  }
+
+  attachFile(key, channel_id, root_id, id, cx) {
+    const d = this.drafts.get(key);
+    const bound = this.boxes.some((b) => b.key === key);
+    this.drafts.set(key, { message: "", ...d, channel_id, root_id, file_ids: [...(d?.file_ids ?? []), id], typing: d ? d.typing : bound, dirty: true, update_at: Date.now() });
+    this.draftsTouched = true;
+    this.composerChanged(key, cx);
+  }
+
+  // Taking a file off leaves it on the server, as Mattermost does; the post simply doesn't claim it.
+  detachFile(key, id, cx) {
+    const d = this.drafts.get(key);
+    if (!d) return;
+    const next = { ...d, file_ids: (d.file_ids ?? []).filter((x) => x !== id), dirty: true, update_at: Date.now() };
+    if (draftEmpty(next) && !d.remote) this.drafts.delete(key);
+    else this.drafts.set(key, next);
+    this.draftsTouched = true;
+    this.composerChanged(key, cx);
+  }
+
+  // A draft from the web app names its files by id only, so their names are asked for once, after the render.
+  fileInfo(id) {
+    if (!this.fileInfos.has(id)) {
+      this.fileInfos.set(id, null);
+      this.wantedInfos.add(id);
+    }
+    return this.fileInfos.get(id);
+  }
+
+  async loadFileInfos(cx) {
+    const ids = [...this.wantedInfos];
+    this.wantedInfos.clear();
+    if (this.cfg?.demo) return;
+    for (const id of ids) {
+      try { this.fileInfos.set(id, await this.api(cx, `/files/${id}/info`)); } catch {}
+    }
+    this.redraw(cx);
+  }
+
+  priorityOf(key) {
+    const p = this.drafts.get(key)?.priority ?? this.pendingPriority.get(key);
+    return hasPriority(p) ? p : null;
+  }
+
+  setPriority(key, priority, cx) {
+    const d = this.drafts.get(key);
+    if (d) {
+      this.drafts.set(key, { ...d, priority: priority ?? undefined, dirty: true, update_at: Date.now() });
+      this.draftsTouched = true;
+      if (!d.typing) this.pushDraft(key, cx);
+    } else if (priority) this.pendingPriority.set(key, priority);
+    else this.pendingPriority.delete(key);
+    for (const box of this.boxes) if (box.key === key) { cx.notify(box.part); box.input.focus(); }
+  }
+
+  sendBox(box, cx) {
+    box.input.focus();
+    box.suggest.submit(null, cx, (cx) => this.send(box, cx));
+  }
+
+  // Mattermost keeps the bar's state per kind of box in the advanced_text_editor preferences, so it follows
+  // the person to the web app and back.
+  setFormatHidden(where, hidden, cx) {
+    this.formatHidden = { ...this.formatHidden, [where]: hidden };
+    for (const box of this.boxes) if (box.where === where) { box.more = false; cx.notify(box.part); }
+    if (!this.me) return;
+    cx.spawn(async (cx) => {
+      try {
+        await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: [{ user_id: this.me.id, category: FORMAT_PREF, name: where, value: String(hidden) }] });
+      } catch (e) {
+        this.error = String(e?.message ?? e);
+        this.redraw(cx);
+      }
+    });
+  }
+
+  // The picker inserts at the caret, which the box keeps while the picker has the keyboard.
+  openComposerPicker(box) {
+    if (!this.me) return;
+    const z = this.zoom(), b = box.pickerAt ?? this.box;
+    const room = this.box ? (this.box.height - 8) / z : PICKER_H;
+    const height = Math.min(PICKER_H, room);
+    this.popupOpened(openOverlay({
+      mod: "mattermost", kind: "popup", frame: "none", width: PICKER_W, height,
+      at: b ? { x: Math.max(4, b.x + b.width - PICKER_W * z), y: this.place(b, height * z, "above") } : "pointer",
+      props: { demo: this.cfg?.demo, picker: { insert: box.name, me: this.me.id, team: this.team.name, height } },
+    }));
   }
 
   // Rows are [key, build]. Every row scrolled past stays in the timeline, and building them all made
@@ -3634,7 +3794,8 @@ export default class Mattermost extends View {
           .when(Boolean(custom?.emoji), (el) => el.child(this.statusEmoji(`ps-${p.id}`, custom, 16, t).ml(-4)))
           .when(this.isBot(p), (el) => el.child(div().h(16).px(4).rounded(4).flex().items_center().bg(alpha(t.foreground, 0.08))
             .text_size(10).line_height("12px").font_semibold().text_color(t.foreground).child("BOT")))
-          .child(div().flex_none().text_size(12).text_color(t.foreground).opacity(0.73).child(time))))
+          .child(div().flex_none().text_size(12).text_color(t.foreground).opacity(0.73).child(time))
+          .when(!p.root_id && priorityEnabled(this.clientConfig) && Boolean(priorityTag(p.metadata?.priority?.priority, t)), (el) => el.child(priorityTag(p.metadata.priority.priority, t)))))
         .children(this.editing === p.id ? [this.editBox(p, t)] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
         .children(postFiles(this, p, t, scope))
         .children(postAttachments(this, p, t, scope))

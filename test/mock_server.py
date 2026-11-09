@@ -15,7 +15,8 @@ custom = {"emoji": "house", "text": "Working from home", "duration": ""}
 STATE = {
     "status": "online", "manual": False, "pref": None,
     "license": {"IsLicensed": "true", "SkuShortName": "professional", "LDAPGroups": "false"},
-    "config": {"EnableCustomUserStatuses": "true", "BuildEnterpriseReady": "true", "EnablePublicLink": "true", "EnableCustomGroups": "true"},
+    "config": {"EnableCustomUserStatuses": "true", "BuildEnterpriseReady": "true", "EnablePublicLink": "true", "EnableCustomGroups": "true", "PostPriority": "true", "PostAcknowledgements": "true", "EnableFileAttachments": "true"},
+    "format": {}, "uploads": [],
     "notify": {"mention_keys": "@sam,@channel,b2c,on:call", "first_name": "true", "channel": "true", "highlight_keys": "regression,dry-run"},
     "first_name": "Sam", "team_constrained": False, "channel_constrained": False,
     "groups": [{"id": "g1", "name": "b2c_team", "allow_reference": True, "delete_at": 0, "source": "custom"}, {"id": "g2", "name": "nope", "allow_reference": False, "delete_at": 0, "source": "custom"}, {"id": "g3", "name": "ldapers", "allow_reference": True, "delete_at": 0, "source": "ldap"}],
@@ -117,7 +118,9 @@ class H(BaseHTTPRequestHandler):
         if self.headers.get("Upgrade", "").lower() == "websocket": return self.websocket()
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b""
-        body = json.loads(raw) if raw else None
+        multipart = self.headers.get("Content-Type", "").startswith("multipart/")
+        body = {"multipart": len(raw), "files": re.findall(rb'filename="([^"]*)"', raw)} if multipart else json.loads(raw) if raw else None
+        if multipart: body["files"] = [f.decode() for f in body["files"]]
         u = urlparse(self.path); p = u.path.removeprefix("/api/v4"); q = parse_qs(u.query)
         LOG.write(json.dumps({"t": round(time.time(), 1), "m": method, "p": self.path, "auth": self.headers.get("Authorization"), "b": body}, ensure_ascii=False) + "\n")
         global custom, closed_shown
@@ -177,6 +180,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/users/me/preferences":
             prefs = [{"category": "direct_channel_show", "name": "u2", "value": "true" if closed_shown else "false"}, {"category": "custom_status", "name": "recent_custom_statuses", "value": json.dumps([{"emoji": "hamburger", "text": "Out for lunch", "duration": "thirty_minutes"}])}]
             if STATE["pref"] is not None: prefs.append({"category": "auto_reset_manual_status", "name": ME, "value": STATE["pref"]})
+            prefs += [{"category": "advanced_text_editor", "name": k, "value": v} for k, v in STATE["format"].items()]
             return self.send(prefs)
         if p == "/users/me/preferences/flagged_post": return self.send([{"category": "flagged_post", "name": "p1", "value": "true"}])
         if p == "/users/status/ids": return self.send([{"user_id": i, "status": STATE["status"] if i == ME else "online", "manual": i == ME and STATE["manual"], "last_activity_at": NOW, "dnd_end_time": 0} for i in body])
@@ -206,10 +210,11 @@ class H(BaseHTTPRequestHandler):
             closed_shown = closed_shown or any(x["category"] == "direct_channel_show" and x["value"] == "true" for x in body)
             for x in body:
                 if x["category"] == "auto_reset_manual_status": STATE["pref"] = x["value"]
+                if x["category"] == "advanced_text_editor": STATE["format"][x["name"]] = x["value"]
             return self.send({"status": "OK"})
         if p == f"/users/{ME}/preferences/delete": return self.send({"status": "OK"})
         if p == "/posts" and method == "POST":
-            np = post("p%d" % (500 + len(STATE.setdefault("sent", []))), body["channel_id"], body["message"], user_id=ME, root_id=body.get("root_id", ""))
+            np = post("p%d" % (500 + len(STATE.setdefault("sent", []))), body["channel_id"], body["message"], user_id=ME, root_id=body.get("root_id", ""), metadata=body.get("metadata", {}), file_ids=body.get("file_ids", []))
             np["create_at"] = np["update_at"] = int(time.time() * 1000)
             STATE["sent"].append(np["id"])
             ev = {"event": "posted", "data": {"post": json.dumps(np), "channel_type": "O", "channel_display_name": "General", "sender_name": "@sam", "team_id": "t1"}, "broadcast": {"channel_id": np["channel_id"]}, "seq": 1}
@@ -225,6 +230,12 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "image/jpeg"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
             return
         if p == "/commands/execute": return self.send({"text": "ran"})
+        if p == "/files" and method == "POST":
+            infos = [{"id": "up%d" % (len(STATE["uploads"]) + i), "name": name, "extension": name.rsplit(".", 1)[-1].lower() if "." in name else "", "size": body["multipart"], "mime_type": "application/octet-stream", "width": 0, "height": 0} for i, name in enumerate(body["files"])]
+            STATE["uploads"] += infos
+            return self.send({"file_infos": infos, "client_ids": []}, 201)
+        m = re.fullmatch(r"/files/([^/]+)/info", p)
+        if m: return self.send(next((x for x in STATE["uploads"] if x["id"] == m[1]), {"id": m[1], "name": "old.txt", "extension": "txt", "size": 12}))
         return self.send({"id": "mock.not_found", "message": f"mock has no {method} {p}"}, 404)
     def do_GET(self): self.handle_any("GET")
     def do_POST(self): self.handle_any("POST")

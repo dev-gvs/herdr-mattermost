@@ -1,6 +1,6 @@
 # Mattermost for Herdr
 
-A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing, drafts, the post menu, Recent Mentions, Saved messages, your status and custom status, your profile, and Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands). Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
+A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing, drafts, the post menu, Recent Mentions, Saved messages, your status and custom status, your profile, Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands), and its message box with the formatting bar and shortcuts, message priority, file uploads and preview. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
 ![Mattermost in Herdr](preview.png)
 
@@ -39,6 +39,7 @@ To try it without a server, give the block `"props": { "demo": true }`. It shows
 - Webhook icons, images in messages and link preview pictures from other hosts are downloaded without the token. Those hosts see your address, as they would in a browser.
 - Avatars, emoji, images and attachments are cached in `~/.config/herdr-app/data/mattermost/`. Files you open stay there for two weeks, and pictures from other hosts for 30 days.
 - Unsent drafts stay in `~/.config/herdr-app/data/mattermost/`, readable only by you. When your server allows synced drafts they also go to it, as the web app's do.
+- Attaching files to a message uses `kdialog` or `zenity` (or a drop on the box). The files go to your Mattermost server through `curl`.
 - Choosing a profile picture uses `kdialog` or `zenity` if you have one. The picture goes to your Mattermost server and a temporary copy stays in `~/.config/herdr-app/data/mattermost/private/` until the section closes.
 - Save Image copies the file into your downloads folder. Save Image As… asks where through `kdialog` or `zenity` if you have one.
 - The mod runs `curl` for downloads, `xdg-open` for links and files, and `wl-copy` for Copy Image (Wayland only). `ffmpeg`, `ffprobe` and `mpv` are optional: they add video posters, GIF stills, the limits on GIF memory and image size, and playback (without `mpv`, video opens in your default player).
@@ -87,6 +88,10 @@ Recent Mentions and its filters:
 
 ![Recent Mentions and its filters](screenshots/mentions.png)
 
+The message box with its formatting bar and a message priority:
+
+![The message box with its formatting bar and a message priority](screenshots/composer.png)
+
 Suggestions while typing:
 
 ![Suggestions while typing](screenshots/suggestions.png)
@@ -101,4 +106,4 @@ Profile:
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The line icons in `mods/mattermost/icons/` are from [Lucide](https://lucide.dev) under the ISC license ([LICENSE-lucide](mods/mattermost/icons/LICENSE-lucide)). The Mattermost name and logo are trademarks of Mattermost, Inc.; this project is not affiliated with it.
+MIT, see [LICENSE](LICENSE). The line icons in `mods/mattermost/icons/` are from [Lucide](https://lucide.dev) under the ISC license ([LICENSE-lucide](mods/mattermost/icons/LICENSE-lucide)). The icons in `mods/mattermost/icons/compass/` are Mattermost's [Compass Icons](https://github.com/mattermost/compass-icons) under the MIT license ([LICENSE-compass](mods/mattermost/icons/compass/LICENSE-compass)). The Mattermost name and logo are trademarks of Mattermost, Inc.; this project is not affiliated with it.

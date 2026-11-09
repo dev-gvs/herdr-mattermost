@@ -1,12 +1,13 @@
 // Mattermost's emoji picker, drawn by a popup copy of this mod: search, category tabs, recently used
 // (the server's recent_emojis preference, named by the user's id and shared with the official apps), every standard emoji and the
 // server's custom ones. Picking one reacts to the post, and the panel sees it in the reaction_added event; opened from
-// the status dialog, it hands the emoji back through shared state.
+// the status dialog, it hands the emoji back through shared state, and from a message box it asks the panel to type it in.
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { props, closeOverlay, theme, exec, readTextFile, appHome, setShared } from "herdr";
 import { FONT, alpha } from "../main.js";
 import { Media } from "./media.js";
+import { request } from "./menu.js";
 
 export const PICKER_W = 360, PICKER_H = 432;
 const COLS = 9, CELL = 36, HEAD = 28, MAX_RECENT = 27;
@@ -116,14 +117,16 @@ export class EmojiPicker {
   }
 
   pick(e, cx) {
-    const { me, post, status } = this.spec;
+    const { me, post, status, insert } = this.spec;
     if (status) {
       setShared("mattermost.status-emoji", { id: `${Date.now()}-${Math.random()}`, name: e.name, char: e.char ?? "", path: this.glyphPath(e) });
       return this.close();
     }
     cx.spawn(async (cx) => {
       try {
-        await this.view.api(cx, "/reactions", { method: "POST", body: { user_id: me, post_id: post, emoji_name: e.name } });
+        // A standard emoji goes into a message as its character and a custom one as its name.
+        if (insert) request("insert-emoji", { box: insert, text: e.char || `:${e.name}:` });
+        else await this.view.api(cx, "/reactions", { method: "POST", body: { user_id: me, post_id: post, emoji_name: e.name } });
         const recent = (this.recentRaw ?? []).filter((r) => r.name !== e.name);
         const was = (this.recentRaw ?? []).find((r) => r.name === e.name)?.usageCount ?? 0;
         recent.push({ name: e.name, usageCount: was + 1 });
