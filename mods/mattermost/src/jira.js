@@ -14,19 +14,22 @@ const DAYS = 30;
 
 // The gateway warns about unnamed operations. Every field here was checked against a real site, but a node
 // with content was never seen there, so the code treats every part of one as optional.
-const FEED = `query JiraFeed($category: InfluentsNotificationCategory, $after: DateTime, $all: Boolean!) {
+const FEED = `query JiraFeed($category: InfluentsNotificationCategory, $after: DateTime, $all: Boolean!, $ari: String) {
   notifications {
-    direct: notificationFeed(first: ${PAGE}, filter: { categoryFilter: direct, readStateFilter: unread, afterTimestamp: $after }) { ...JiraNodes }
-    watching: notificationFeed(first: ${PAGE}, filter: { categoryFilter: watching, readStateFilter: unread, afterTimestamp: $after }) { ...JiraNodes }
-    all: notificationFeed(first: ${PAGE}, filter: { categoryFilter: $category, afterTimestamp: $after }) @include(if: $all) { ...JiraNodes }
+    direct: notificationFeed(first: ${PAGE}, collabContextRoutingAri: $ari, filter: { categoryFilter: direct, readStateFilter: unread, afterTimestamp: $after }) { ...JiraNodes }
+    watching: notificationFeed(first: ${PAGE}, collabContextRoutingAri: $ari, filter: { categoryFilter: watching, readStateFilter: unread, afterTimestamp: $after }) { ...JiraNodes }
+    all: notificationFeed(first: ${PAGE}, collabContextRoutingAri: $ari, filter: { categoryFilter: $category, afterTimestamp: $after }) @include(if: $all) { ...JiraNodes }
   }
 }
 fragment JiraNodes on InfluentsNotificationFeedConnection {
   nodes { headNotification { notificationId readState timestamp category content { type message url actor { displayName avatarURL } entity { title url contentSubtype } bodyItems { type document { format data } } } } }
 }`;
+// Without the site's routing id the gateway answers from an empty context: no notifications and an unseen count of 0,
+// for an API token and a browser login alike. Jira's own bell sends ari:cloud:jira:<cloudId>:workspace/<activation id>.
+const TENANT = `query JiraTenant($hosts: [String!]!) { tenantContexts(hostNames: $hosts) { cloudId activationIdByProduct(product: "jira") { active } } }`;
 const MARK = {
-  read: ["JiraRead", "mutation JiraRead($ids: [String!]!) { notifications { markNotificationsByIdsAsRead(ids: $ids) } }"],
-  unread: ["JiraUnread", "mutation JiraUnread($ids: [String!]!) { notifications { markNotificationsByIdsAsUnread(ids: $ids) } }"],
+  read: ["JiraRead", "mutation JiraRead($ids: [String!]!, $ari: String) { notifications { markNotificationsByIdsAsRead(ids: $ids, collabContextRoutingAri: $ari) } }"],
+  unread: ["JiraUnread", "mutation JiraUnread($ids: [String!]!, $ari: String) { notifications { markNotificationsByIdsAsUnread(ids: $ids, collabContextRoutingAri: $ari) } }"],
 };
 
 // Jira's own issue type colours, so the marks read as they do in Jira.
@@ -183,8 +186,21 @@ export class JiraInbox {
     return `Basic ${base64(`${email}:${token}`)}`;
   }
 
+  // Looked up once per panel; a failed lookup is retried on the next request.
+  async routingAri(cx) {
+    if (this.ari) return this.ari;
+    const data = await this.post(cx, "JiraTenant", TENANT, { hosts: [new URL(this.cfg.site).host] });
+    const t = data?.tenantContexts?.[0], cloud = t?.cloudId, workspace = t?.activationIdByProduct?.active;
+    if (!cloud || !workspace) throw new Error(`Jira didn't say which site ${this.cfg.site} is`);
+    return (this.ari = `ari:cloud:jira:${cloud}:workspace/${workspace}`);
+  }
+
   async gql(cx, operationName, query, variables) {
     if (this.cfg.demo) return jiraDemo(operationName, variables);
+    return this.post(cx, operationName, query, { ...variables, ari: await this.routingAri(cx) });
+  }
+
+  async post(cx, operationName, query, variables) {
     const auth = await this.authHeader();
     const res = await Promise.race([
       fetch(`${this.cfg.site}/gateway/api/graphql`, {

@@ -100,6 +100,11 @@ class H(BaseHTTPRequestHandler):
         if p == "/gateway/api/graphql" and method == "POST":
             if self.headers.get("Authorization") != JIRA_AUTH: return self.send({"message": "Unauthorized"}, 401)
             op, v = body.get("operationName"), body.get("variables") or {}
+            if op == "JiraTenant":
+                return self.send({"data": {"tenantContexts": [{"cloudId": "mock-cloud", "activationIdByProduct": {"active": "mock-jira"}}]}})
+            if op in ("JiraFeed", "JiraRead", "JiraUnread") and v.get("ari") != "ari:cloud:jira:mock-cloud:workspace/mock-jira":
+                # As the real gateway does without the routing id: an empty context.
+                return self.send({"data": {"notifications": {"direct": {"nodes": []}, "watching": {"nodes": []}, "all": {"nodes": []}}}})
             if op == "JiraFeed":
                 data = {"direct": jira_feed(lambda n: n["category"] == "direct" and n["readState"] == "unread"),
                         "watching": jira_feed(lambda n: n["category"] == "watching" and n["readState"] == "unread")}
