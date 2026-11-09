@@ -60,6 +60,7 @@ test/sandbox.sh stop
 ### Data sources
 
 - `demo` uses the mod's built-in data from `mods/mattermost/demo/demo.js`. It's the fastest way to check looks and has the widest range of content.
+- `demo-jira` and `server-jira` are the same two with the Jira inbox on. `server-jira` reads the made-up credentials in `/var/tmp/mmt/home/.config/jira-test.conf` and talks to the mock's `/gateway/api/graphql`, whose notifications are `STATE["jira"]`. Without the `-jira` layouts the panel must look as it did before Jira.
 - `server` talks to `test/mock_server.py` on `127.0.0.1:18069` with the token `fake-token`. Use it to check the real request path. Every call is logged as a JSON line in `/var/tmp/mmt/mock.log`, with its `Authorization` header. A route the mock lacks answers 404 and shows up there, so add it to the mock. `POST http://127.0.0.1:18069/__mock` with a JSON object changes the mock's `STATE`, and a `ws` key in it pushes that event down the websockets.
 
 ### Traps

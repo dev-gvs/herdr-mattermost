@@ -93,6 +93,13 @@ cmd_start() {
   echo '{ "url": "http://127.0.0.1:18069", "token": "fake-token", "team": "team" }' > "$S/app/mattermost.json"
   echo '{ "id": "root", "type": "block", "titlebar": "none", "content": { "mod": "mattermost", "props": { "demo": true, "channel": "design", "frame": true } } }' > "$S/app/layouts/demo.json"
   echo '{ "id": "root", "type": "block", "titlebar": "none", "content": { "mod": "mattermost", "props": { "channel": "bugs", "frame": true } } }' > "$S/app/layouts/server.json"
+  # The same two with the Jira inbox on, against the mock's gateway and a made-up credentials file.
+  mkdir -p "$S/home/.config"
+  printf '[jira]\nemail = sam@x.example\ntoken = fake-jira-token\n' > "$S/home/.config/jira-test.conf"
+  chmod 600 "$S/home/.config/jira-test.conf"
+  local jira='"jira": { "site": "http://127.0.0.1:18069", "credentials": "~/.config/jira-test.conf" }'
+  echo "{ \"id\": \"root\", \"type\": \"block\", \"titlebar\": \"none\", \"content\": { \"mod\": \"mattermost\", \"props\": { \"demo\": true, \"channel\": \"design\", \"frame\": true, $jira } } }" > "$S/app/layouts/demo-jira.json"
+  echo "{ \"id\": \"root\", \"type\": \"block\", \"titlebar\": \"none\", \"content\": { \"mod\": \"mattermost\", \"props\": { \"channel\": \"bugs\", \"frame\": true, $jira } } }" > "$S/app/layouts/server-jira.json"
 
   XDG_RUNTIME_DIR="$S/run" KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 setsid nohup dbus-run-session -- \
     kwin_wayland --virtual --width "$SCREEN_W" --height "$SCREEN_H" --no-lockscreen --no-global-shortcuts --no-kactivities --socket=wl-x \

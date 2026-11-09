@@ -20,7 +20,25 @@ STATE = {
     "first_name": "Sam", "team_constrained": False, "channel_constrained": False,
     "groups": [{"id": "g1", "name": "b2c_team", "allow_reference": True, "delete_at": 0, "source": "custom"}, {"id": "g2", "name": "nope", "allow_reference": False, "delete_at": 0, "source": "custom"}, {"id": "g3", "name": "ldapers", "allow_reference": True, "delete_at": 0, "source": "ldap"}],
     "channel_groups": {},
+    # Jira's notifications, served on /gateway/api/graphql. Replace the list through /__mock to test the empty state.
+    "jira": [],
 }
+JIRA_AUTH = "Basic " + base64.b64encode(b"sam@x.example:fake-jira-token").decode()
+def jira_note(i, category, minutes, read, actor, message, key, subtype, title, comment=None):
+    return {"notificationId": i, "category": category, "readState": "read" if read else "unread",
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(NOW / 1000 - minutes * 60)),
+            "content": {"type": "jira", "message": message, "url": f"http://127.0.0.1:18069/browse/{key}",
+                        "actor": {"displayName": actor, "avatarURL": None},
+                        "entity": {"title": title, "url": f"http://127.0.0.1:18069/browse/{key}", "contentSubtype": subtype},
+                        "bodyItems": [{"type": "comment", "document": {"format": "ADF", "data": json.dumps({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": comment}]}]})}}] if comment else []}}
+STATE["jira"] = [
+    jira_note("j1", "direct", 5, False, "Ann B", "Ann B mentioned you in a comment", "BUG-12", "Bug", "Login loops on Android 15", "@Sam G can you take a look at the logs?"),
+    jira_note("j2", "direct", 90, False, "Ann B", "changed the status to In Progress", "BUG-9", "Task", "Rotate the API keys"),
+    jira_note("j3", "direct", 26 * 60, False, "Ann B", "assigned you", "APP-3", "Story", "Dark mode for settings"),
+    jira_note("j4", "watching", 40, False, "Ann B", "commented", "APP-1", "Epic", "Release 2.0", "Moving the date by a week."),
+    jira_note("j5", "direct", 3 * 24 * 60, True, "Ann B", "created", "APP-2", "Subtask", "Write the release notes"),
+]
+def jira_feed(pick): return {"nodes": [{"headNotification": n} for n in sorted(STATE["jira"], key=lambda n: n["timestamp"], reverse=True) if pick(n)]}
 ME_USER = lambda: {"id": ME, "username": "sam", "first_name": STATE["first_name"], "last_name": "G", "nickname": "", "position": "Dev", "email": "sam@x.example", "last_picture_update": 0,
                    "notify_props": STATE["notify"], "props": {"customStatus": json.dumps(custom)} if custom else {}}
 OTHER = {"id": "u2", "username": "ann", "first_name": "Ann", "last_name": "B", "nickname": "", "position": "", "last_picture_update": 0, "props": {}}
@@ -79,6 +97,19 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path); p = u.path.removeprefix("/api/v4"); q = parse_qs(u.query)
         LOG.write(json.dumps({"t": round(time.time(), 1), "m": method, "p": self.path, "auth": self.headers.get("Authorization"), "b": body}, ensure_ascii=False) + "\n")
         global custom, closed_shown
+        if p == "/gateway/api/graphql" and method == "POST":
+            if self.headers.get("Authorization") != JIRA_AUTH: return self.send({"message": "Unauthorized"}, 401)
+            op, v = body.get("operationName"), body.get("variables") or {}
+            if op == "JiraFeed":
+                data = {"direct": jira_feed(lambda n: n["category"] == "direct" and n["readState"] == "unread"),
+                        "watching": jira_feed(lambda n: n["category"] == "watching" and n["readState"] == "unread")}
+                if v.get("all"): data["all"] = jira_feed(lambda n: n["category"] == v.get("category"))
+                return self.send({"data": {"notifications": data}})
+            if op in ("JiraRead", "JiraUnread"):
+                for n in STATE["jira"]:
+                    if n["notificationId"] in v["ids"]: n["readState"] = "read" if op == "JiraRead" else "unread"
+                return self.send({"data": {"notifications": {"markNotificationsByIdsAs" + op[4:]: "OK"}}})
+            return self.send({"errors": [{"message": f"mock has no operation {op}"}]}, 400)
         if p == "/__mock":
             ev = body.pop("ws", None)
             STATE.update(body)
