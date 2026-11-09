@@ -13,8 +13,8 @@ import { ProfileDialog, openProfileDialog } from "./src/profile.js";
 import { StatusDialog, DndDialog, STATUS_W, STATUS_H, DND_W, DND_H, SUGGESTIONS } from "./src/status.js";
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { Suggest, Directory } from "./src/suggest.js";
-import { composerView, noteText, insertAtCaret, iconButton, FORMAT_PREF } from "./src/composer.js";
-import { filePreviews, canUpload } from "./src/upload.js";
+import { composerView, noteText, insertAtCaret, iconButton, takeFilePaste, FORMAT_PREF } from "./src/composer.js";
+import { filePreviews, canUpload, pasteFiles } from "./src/upload.js";
 import { PriorityPicker, openPriorityPicker, priorityEnabled, priorityLabels, priorityTag, hasPriority } from "./src/priority.js";
 import { HighlightKeys, NO_KEYS } from "./src/highlight.js";
 import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statusFromCommand, firstStart, forgetStart } from "./src/reset_status.js";
@@ -453,6 +453,7 @@ export default class Mattermost extends View {
     this.editInput.on("change", (_e, cx) => {
       edit.before = edit.now;
       edit.now = this.editInput.value();
+      if (takeFilePaste(this, edit, edit.before ?? "", edit.now, cx)) return;
       edit.suggest.changed(cx);
       if (noteText(edit)) cx.notify(edit.part);
     });
@@ -462,6 +463,7 @@ export default class Mattermost extends View {
       edit.suggest.dropLineBreak(edit.now);
       edit.suggest.submit(e, cx, (cx) => this.saveEdit(cx));
     });
+    this.editInput.on("paste_other", (_e, cx) => cx.spawn(async (cx) => pasteFiles(this, edit, cx)));
     this.editInput.on("focus", (_e, cx) => { edit.focused = true; cx.notify(edit.part); });
     this.editInput.on("blur", (_e, cx) => { edit.focused = false; edit.suggest.blur(cx); cx.notify(edit.part); });
     edit.suggest = this.newSuggest(cx, this.editInput, () => {
@@ -481,11 +483,13 @@ export default class Mattermost extends View {
       box.part = this.parts[`composer-${box.name}`] = cx.new(Part, { owner: this.ownerKey, part: `composer-${box.name}` });
       box.suggest.host = box.part;
       box.empty = true;
+      box.input.on("paste_other", (_e, cx) => cx.spawn(async (cx) => pasteFiles(this, box, cx)));
       box.input.on("focus", (_e, cx) => { this.typing = box.focused = true; cx.notify(); cx.notify(box.part); });
       box.input.on("blur", (_e, cx) => { this.typing = box.focused = false; box.suggest.blur(cx); cx.notify(); cx.notify(box.part); });
       box.input.on("change", (_e, cx) => {
         box.before = box.now;
         box.now = box.input.value();
+        if (takeFilePaste(this, box, box.before ?? "", box.now, cx)) return;
         this.noteDraft(box);
         box.suggest.changed(cx);
         if (noteText(box)) cx.notify(box.part);

@@ -6,7 +6,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Textarea, Popup } from "gpui-base";
 import { settings } from "herdr";
 import { FONT, alpha } from "../main.js";
-import { chooseFiles, uploadFiles } from "./upload.js";
+import { chooseFiles, filesAsText, pasteFiles, uploadFiles } from "./upload.js";
 import { CONTROLS, applyMarkdown, isWithinCodeBlock, layoutMode, readSelection, shortcut, splitControls, tooltip } from "./format.js";
 
 const BAR_H = 48;
@@ -61,6 +61,26 @@ export function noteText(box) {
   if (short) box.long = false;
   if (empty === box.empty && !short) return false;
   box.empty = empty;
+  return true;
+}
+
+// Files copied in a file manager paste as their URLs in text, and the box has inserted them by the time it
+// reports the change, so the text comes out again and the files go up instead, as a drop of them would.
+// True when it took the paste.
+export function takeFilePaste(panel, box, before, now, cx) {
+  if (!box.canAttach || box.preview) return false;
+  let start = 0;
+  while (start < before.length && start < now.length && before[start] === now[start]) start++;
+  let tail = 0;
+  while (tail < before.length - start && tail < now.length - start && before[before.length - 1 - tail] === now[now.length - 1 - tail]) tail++;
+  const inserted = now.slice(start, now.length - tail);
+  // Only a change that looks like one goes to the clipboard, which isn't free to read on every keystroke.
+  if (!filesAsText(inserted)) return false;
+  const text = cx.read_from_clipboard();
+  const bare = (s) => s?.replace(/\r/g, "");
+  if (!filesAsText(text) || bare(inserted) !== bare(text)) return false;
+  setText(panel, box, before, start, before.length - tail);
+  cx.spawn(async (cx) => pasteFiles(panel, box, cx, text));
   return true;
 }
 
