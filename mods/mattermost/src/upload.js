@@ -6,7 +6,8 @@ import { h_flex } from "gpui-base";
 import { exec, appHome, home, readTextFile } from "herdr";
 import { alpha, fileSize, sleep } from "../main.js";
 import { FIND_CHOOSER } from "./picture.js";
-import { FF_FORMATS } from "./media.js";
+import { FF_FORMATS, Media } from "./media.js";
+import { CODE_MAX_BYTES, codeLanguage } from "./image.js";
 
 const PRIVATE = "data/mattermost/private";
 const POLL = 300;
@@ -79,6 +80,9 @@ const detached = (script, ...args) => exec("sh", ["-c", 'nohup sh -c "$0" "$@" >
 // curl reads ; and , in a -F value as its own syntax, unless the value is quoted.
 const quoted = (text) => `"${text.replace(/["\\]/g, "\\$&")}"`;
 const formFile = (path) => `files=@${quoted(path)};filename=${quoted(path.split("/").pop())}`;
+
+// FileInfoPreview's icons (ICON_FROM_TYPE), which have none for text or images.
+const infoIcon = (type) => fileIcon(type === "text" || type === "image" || type === "svg" ? "other" : type);
 
 export const canUpload = (config) => config?.EnableFileAttachments === "true";
 const maxFileSize = (config) => parseInt(config?.MaxFileSize, 10) || DEFAULT_MAX_FILE;
@@ -319,7 +323,8 @@ export function filePreviews(panel, box, t) {
   const files = ids.map((id) => {
     const f = panel.fileInfo(id);
     const remove = box.keepFiles ? null : (cx) => panel.detachFile(box.key, id, cx);
-    return card(t, id, thumbnail(panel, id, f), [
+    const open = f && !f.delete_at ? (cx) => cx.spawn(async (cx) => openBoxFiles(panel, box, id, cx)) : null;
+    return card(t, id, thumbnail(panel, id, f), open, [
       div().truncate().max_w(151).mb(3).font_semibold().child(f?.name ?? ""),
       h_flex().min_w(0).text_color(alpha(t.foreground, 0.73))
         .when(Boolean(f?.extension), (el) => el.child(div().flex_none().max_w(134).truncate().child(f.extension.toUpperCase())))
@@ -330,7 +335,7 @@ export function filePreviews(panel, box, t) {
     const local = panel.localThumbs.get(u.client);
     const pic = local?.rel ? localPicture(local) : picFrame(image(fileIcon(fileType(u.extension))).w(32).h(40), false);
     const status = u.percent >= 100 ? "Processing..." : `Uploading... (${Math.round(u.percent)}%)`;
-    return card(t, u.client, pic, [
+    return card(t, u.client, pic, null, [
       div().truncate().max_w(151).mb(3).font_semibold().child(u.name),
       div().truncate().text_color(alpha(t.foreground, 0.75)).child(status),
     ], (cx) => cancelUpload(panel, box.key, u, cx), null, u.percent > 0 && u.percent < 100 ? u.percent : null);
@@ -346,11 +351,67 @@ function cancelUpload(panel, key, up, cx) {
   panel.composerChanged(key, cx);
 }
 
-function card(t, key, picture, lines, onRemove, disabledTip, percent = null) {
+// Mattermost opens its preview modal from the picture only, over every file the box holds; a file still going up
+// has no card to click until it's on the server.
+let opening = false;
+export async function openBoxFiles(panel, box, id, cx) {
+  if (opening) return;
+  opening = true;
+  try {
+    const infos = panel.fileIdsOf(box.key).map((x) => panel.fileInfo(x)).filter((f) => f && !f.delete_at);
+    const index = infos.findIndex((f) => f.id === id);
+    if (index < 0) return;
+    const items = infos.map((f) => boxItem(panel, f));
+    const wait = (ms) => sleep(cx, ms);
+    if (!panel.cfg?.demo) {
+      await panel.media.settle(panel.cfg, items.flatMap((x) => x.wanted ?? []), wait);
+      for (const item of items) if (item.redo) item.path = item.redo();
+    }
+    for (const item of items) {
+      if (item.kind !== "code" && !item.whole) continue;
+      const rel = await panel.media.download(panel.cfg, item.file, wait).catch(() => null);
+      if (item.kind === "code") item.rel = rel;
+      else item.path = rel;
+      if (!rel) item.kind = "info";
+    }
+    for (const item of items) {
+      delete item.wanted;
+      delete item.redo;
+      delete item.whole;
+      if (item.kind === "image" && !item.path) item.kind = "info";
+    }
+    const f = infos[index];
+    panel.openLightbox({ user_id: f.user_id || panel.me?.id, channel_id: f.channel_id || panel.boxChannel(box) }, items, index);
+  } finally {
+    opening = false;
+  }
+}
+
+// What the viewer needs of one file: an image's server preview (or the file itself when the server made none, as
+// for Mattermost's GIFs), a text file's lines, or the details card for anything else.
+function boxItem(panel, f) {
+  const type = fileType(f.extension);
+  const file = { id: f.id, name: f.name, extension: f.extension, mime_type: f.mime_type, post_id: f.post_id ?? "" };
+  const base = { file, name: f.name, extension: f.extension, size: f.size, icon: infoIcon(type) };
+  if (type === "image" || type === "svg") {
+    const local = panel.localThumbs.get(f.id);
+    const w = f.width || local?.w || 0, h = f.height || local?.h || 0;
+    if (panel.cfg?.demo) return { ...base, kind: "image", path: f.id.startsWith("demo-up-") ? local?.rel ?? null : panel.media.preview(f.id), w, h };
+    if (type === "svg") return { ...base, kind: "image", redo: () => panel.media.svg(f.id), path: panel.media.svg(f.id), wanted: [Media.svgRel(f.id)], w, h };
+    if (f.has_preview_image) return { ...base, kind: "image", redo: () => panel.media.preview(f.id), path: panel.media.preview(f.id), wanted: [Media.previewRel(f.id)], w, h };
+    return { ...base, kind: "image", path: null, w, h, whole: true };
+  }
+  if (codeLanguage(f.extension) && (f.size ?? 0) <= CODE_MAX_BYTES) return { ...base, kind: "code", lang: codeLanguage(f.extension) };
+  return { ...base, kind: "info" };
+}
+
+function card(t, key, picture, onOpen, lines, onRemove, disabledTip, percent = null) {
   return h_flex().id(`fp-${key}`).relative().flex_none().w(320).min_w(204).max_w_full().h(CARD_H).mr(10).items_center()
     .rounded(4).border_1().border_color(alpha(t.foreground, 0.16)).bg(t.background).text_color(t.foreground)
     .hover((s) => s.shadow_sm())
-    .child(div().w(63).h_full().flex_none().flex().items_center().justify_center().child(picture))
+    .child(div().id(`fp-open-${key}`).w(63).h_full().flex_none().flex().items_center().justify_center()
+      .when(Boolean(onOpen), (el) => el.cursor_pointer().on_click((_e, cx) => onOpen(cx)))
+      .child(picture))
     .child(h_flex().relative().flex_1().min_w(0).h_full().items_center().pr(32).text_size(12)
       .child(div().flex_1().min_w(0).h(36).overflow_hidden().line_height("16px").children(lines))
       .when(Boolean(onRemove) || Boolean(disabledTip), (el) => el.child(removeButton(t, key, onRemove, disabledTip)))
@@ -394,7 +455,7 @@ function thumbnail(panel, id, f) {
     return local.rel.endsWith(".svg") ? picFrame(image(local.rel).size(PIC), true) : cover(local.rel, w, h, isSmall(w, h));
   }
   if (type === "svg" && svgsOn(panel)) {
-    const rel = panel.cfg?.demo ? null : panel.media.path(`data/mattermost/files/${id}.svg`, `/files/${id}`);
+    const rel = panel.cfg?.demo ? null : panel.media.svg(id);
     return picFrame(rel ? image(rel).size(PIC) : div(), true);
   }
   if (type === "image" && f) {

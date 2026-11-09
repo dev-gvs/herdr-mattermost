@@ -128,7 +128,20 @@ export class Media {
 
   preview(fileId) {
     if (this.demo) return `${DEMO}/${fileId}.jpg`;
-    return this.path(`${DIR}/files/${fileId}-preview.jpg`, `/files/${fileId}/preview`);
+    return this.path(Media.previewRel(fileId), `/files/${fileId}/preview`);
+  }
+
+  static previewRel(fileId) {
+    return `${DIR}/files/${fileId}-preview.jpg`;
+  }
+
+  // An SVG has no thumbnail or preview of its own, so the file itself is drawn.
+  svg(fileId) {
+    return this.path(Media.svgRel(fileId), `/files/${fileId}`);
+  }
+
+  static svgRel(fileId) {
+    return `${DIR}/files/${fileId}.svg`;
   }
 
   // An image from a message or a link preview. Whoever wrote the message chose the URL.
@@ -168,6 +181,16 @@ export class Media {
   emoji(id) {
     if (this.demo && id) return `${DEMO}/${id}.png`;
     return id ? this.path(`${DIR}/emoji/${id}`, `/emoji/${id}/image`) : null;
+  }
+
+  // For a caller that can't show anything until the files are here: the queue is flushed now rather than at the
+  // next tick, and each rel counts as done once it has landed or failed.
+  async settle(cfg, rels, wait, seconds = 15) {
+    const deadline = Date.now() + seconds * 1000;
+    while (rels.some((rel) => !this.have.has(rel) && !this.failed.has(rel)) && Date.now() < deadline) {
+      if (this.pending()) await this.flush(cfg);
+      else await wait(POLL);
+    }
   }
 
   pending() {
