@@ -294,7 +294,10 @@ export class JiraInbox {
       const list = (feed) => (feed?.nodes ?? []).map((n) => normalize(n, this.cfg.site)).filter(Boolean);
       this.unread = { direct: list(feeds.direct), watching: list(feeds.watching) };
       this.all = all ? list(feeds.all) : null;
-      this.more = { direct: Boolean(feeds.direct?.pageInfo?.hasNextPage), watching: Boolean(feeds.watching?.pageInfo?.hasNextPage), all: Boolean(feeds.all?.pageInfo?.hasNextPage) };
+      // The real gateway says hasNextPage for a filtered feed whose page wasn't even full (seen 2026-11-09 with one
+      // unread notification), so a short page counts as the end.
+      const more = (f) => Boolean(f?.pageInfo?.hasNextPage) && (f?.nodes?.length ?? 0) >= PAGE;
+      this.more = { direct: more(feeds.direct), watching: more(feeds.watching), all: more(feeds.all) };
       this.error = null;
     } catch (e) {
       if (seq !== this.seq) return;
