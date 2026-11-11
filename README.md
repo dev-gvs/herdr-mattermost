@@ -71,6 +71,10 @@ Sign-in, `/api`, `/files`, scripts and other pages don't match, so they stay in 
 - The rule also catches the web app opened at a conversation's address, by a bookmark, a reload or a new tab, so while it's on the web app won't open at those addresses in that browser. Moving around inside the web app doesn't load a page, so it isn't affected.
 - With the rule on, links the panel leaves to the browser for a conversation it can't show (a channel you aren't in, another team) come back to the handler and open in the desktop app.
 
+## Notifications
+
+Mentions, direct messages and, if you chose them, every post or followed threads post a Herdr notification, by the same rules as Mattermost's desktop notifications, including your channel settings, muted channels and do not disturb. Clicking one opens the message in the panel. With the Jira inbox on, new Jira notifications in Direct post one as well, and clicking it opens the item in the browser and marks it read. Herdr shows them with its `toast` mod, or with whatever mod your layout names in `"toast"`.
+
 ## Privacy
 
 - The token goes only to your Mattermost server: the API, the websocket and the downloads of its files.

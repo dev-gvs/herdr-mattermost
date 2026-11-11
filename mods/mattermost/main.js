@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
-import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, window as appWindow } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
@@ -165,7 +165,7 @@ const CHANNEL_KEYS = ["id", "team_id", "type", "name", "display_name", "purpose"
 const slimChannel = (c) => pick(c, CHANNEL_KEYS);
 const slimMember = (m) => ({
   ...pick(m, ["channel_id", "msg_count", "msg_count_root", "mention_count", "mention_count_root", "last_viewed_at", "roles"]),
-  notify_props: { mark_unread: m.notify_props?.mark_unread },
+  notify_props: { mark_unread: m.notify_props?.mark_unread, desktop: m.notify_props?.desktop },
 });
 const slimUser = (u) => ({ ...pick(u, ["id", "username", "first_name", "last_name", "nickname", "position", "last_picture_update", "is_bot"]), custom: customStatus(u.props?.customStatus) });
 
@@ -196,6 +196,15 @@ const fromWebhook = (p) => p.props?.from_webhook === "true";
 // Webhooks and plugins give their posts types of their own, such as slack_attachment, and those are ordinary posts.
 // Answers to commands are "system" posts too, but they read like messages, with markdown and from System.
 const isEphemeral = (p) => p.type === "system_ephemeral";
+// Markdown read as the words it shows, on one line, for a notification's body.
+const notificationText = (md) => (md ?? "")
+  .replace(/```[\s\S]*?```/g, "[code]")
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+  .replace(/(\*\*|__|~~|`)/g, "")
+  .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+  .replace(/\s+/g, " ")
+  .trim()
+  .slice(0, 300);
 const isSystem = (p) => Boolean(p.type?.startsWith("system_")) && !isEphemeral(p);
 
 // Keeps a Map to the most recently set entries.
@@ -1825,7 +1834,9 @@ export default class Mattermost extends View {
   // may be what sent the link: the answer goes to data/mattermost/links/ID and the handler decides.
   command(c, cx) {
     const [name, ...args] = c.trim().split(/\s+/);
-    if (name !== "open-link" || [...OWNERS.values()].find((o) => !o.solo && !o.cfg?.demo) !== this) return;
+    if (!this.lead()) return;
+    if (name === "jira-open") return this.jira?.openFromNotification(args[0], args[1], cx);
+    if (name !== "open-link") return;
     const reply = args[0] === "--reply" && LINK_ID.test(args[1] ?? "") ? args.splice(0, 2)[1] : null;
     const answer = (word) => reply && exec("sh", ["-c", 'mkdir -p "$1" && printf %s "$3" > "$1/.$2" && mv -f "$1/.$2" "$1/$2"', "sh", `${appHome()}/data/mattermost/links`, reply, word]).catch(() => {});
     answer("received");
@@ -1837,6 +1848,45 @@ export default class Mattermost extends View {
       // Herdr's own command for this raises the window it is already running in.
       if (opened) exec("herdr-app", []).catch(() => {});
       await answer(opened ? "opened" : "declined");
+    });
+  }
+
+  // The copy that answers commands and posts notifications, so several on screen act once.
+  lead() {
+    return [...OWNERS.values()].find((o) => !o.solo && !o.cfg?.demo) === this;
+  }
+
+  // Mattermost's web app rules for a desktop notification (sendDesktopNotification): none for your own or system
+  // posts, while do not disturb or out of office, in a muted channel, or for the conversation you're looking at.
+  // The channel's desktop setting, else yours, says whether every post or only mentions; direct messages always
+  // count (the server lists a group message's members as mentioned). With collapsed threads, which the panel always
+  // uses, a reply notifies only when it mentions you or is in a thread you follow with desktop_threads on.
+  notifyPost(post, data) {
+    if (!this.lead() || !this.me || post.user_id === this.me.id || isSystem(post) || isEphemeral(post)) return;
+    if (["dnd", "ooo"].includes(this.statuses.get(this.me.id))) return;
+    // A closed direct message isn't among the panel's channels; the event names it.
+    const c = this.channels.get(post.channel_id)
+      ?? { id: post.channel_id, type: data.channel_type, name: data.channel_name ?? "", display_name: data.channel_display_name ?? "", team_id: data.team_id ?? "" };
+    if (this.muted(c)) return;
+    const own = this.members.get(c.id)?.notify_props?.desktop;
+    const level = own && own !== "default" ? own : this.me.notify_props?.desktop ?? "mention";
+    if (level === "none") return;
+    const ids = (key) => { try { return JSON.parse(data[key] ?? "[]") ?? []; } catch { return []; } };
+    const mentioned = c.type === "D" || ids("mentions").includes(this.me.id);
+    const reply = Boolean(post.root_id);
+    const wanted = reply
+      ? mentioned || (ids("followers").includes(this.me.id) && this.me.notify_props?.desktop_threads === "all")
+      : mentioned || level === "all";
+    if (!wanted) return;
+    const looking = reply ? this.thread === post.root_id || (this.rhs === "thread" && this.rhsThread === post.root_id) : this.selected === c.id;
+    if (looking && appWindow().active) return;
+    const author = this.authorName(post);
+    const text = notificationText(post.message) || (postFileIds(post).length ? "sent an attachment" : "");
+    notify({
+      title: reply ? `Reply in ${this.channelName(c)}` : this.channelName(c) || data.channel_display_name || "Mattermost",
+      body: c.type === "D" ? text : `${author}: ${text}`,
+      icon: (!fromWebhook(post) && this.media.avatar(this.users.get(post.user_id))) || undefined,
+      action: { name: `mattermost.open-link ${this.postLink(post.id, c.team_id || this.team.id)}` },
     });
   }
 
@@ -2290,7 +2340,7 @@ export default class Mattermost extends View {
       case "posted": {
         const post = JSON.parse(data.post);
         const c = this.channels.get(post.channel_id);
-        if (!c) return this.loadSidebar(cx).then(() => true);
+        if (!c) return this.loadSidebar(cx).then(() => { this.notifyPost(post, data); return true; });
         const root = !post.root_id;
         c.last_post_at = post.create_at;
         c.total_msg_count++;
@@ -2320,6 +2370,7 @@ export default class Mattermost extends View {
           m.mention_count++;
           m.mention_count_root = (m.mention_count_root ?? 0) + 1;
         }
+        this.notifyPost(post, data);
         return true;
       }
       case "ephemeral_message": {

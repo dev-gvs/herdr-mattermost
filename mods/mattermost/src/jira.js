@@ -1,6 +1,6 @@
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { home, appHome, props, exec, readTextFile, writeTextFile } from "herdr";
+import { home, appHome, props, exec, readTextFile, writeTextFile, notify } from "herdr";
 import { alpha, openLink, sleep } from "../main.js";
 import { hash } from "./media.js";
 import { jiraDemo, JIRA_DEMO_SITE } from "../demo/jira.js";
@@ -239,6 +239,8 @@ export class JiraInbox {
     this.error = null;
     this.loaded = false;
     this.seq = 0;
+    // Direct ids already seen, so only new ones notify; null until the first load.
+    this.seen = null;
     cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
     cx.timer.every(POLL, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
   }
@@ -306,6 +308,35 @@ export class JiraInbox {
     this.loaded = true;
     this.view.redraw(cx);
     if (await this.fetchIcons(cx, [...this.unread.direct, ...this.unread.watching, ...(this.all ?? [])])) this.view.redraw(cx);
+    if (!this.error && seq === this.seq) this.announce(this.unread.direct);
+  }
+
+  // New Direct notifications go to the desktop, as Jira's own push does; Watching stays in the bell. The first load
+  // only learns what's there. Past three at once, one summary instead of a flood.
+  announce(list) {
+    const fresh = this.seen ? list.filter((n) => !this.seen.has(n.id)) : [];
+    this.seen = new Set([...(this.seen ?? []), ...list.map((n) => n.id)]);
+    if (!fresh.length || this.cfg.demo || !this.view.lead()) return;
+    const shown = fresh.length > 3 ? fresh.slice(0, 2) : fresh;
+    for (const n of shown) {
+      notify({
+        title: n.message,
+        body: [[n.meta, n.title].filter(Boolean).join(" · "), n.excerpt.slice(0, 200)].filter(Boolean).join("\n"),
+        icon: this.icons.get(n.icon) || undefined,
+        // Opens the browser, so Herdr must not come up over it.
+        action: { name: `mattermost.jira-open ${n.id}${n.url ? ` ${n.url}` : ""}`, args: { raise: false } },
+      });
+    }
+    if (shown.length < fresh.length) {
+      notify({ title: `${fresh.length - shown.length} more Jira notifications`, action: { name: `mattermost.jira-open - ${this.cfg.site}/jira/your-work`, args: { raise: false } } });
+    }
+  }
+
+  // A click on a desktop notification: open it as a row click would, or just its link once it's left the list.
+  openFromNotification(id, url, cx) {
+    const n = [...this.unread.direct, ...this.unread.watching, ...(this.all ?? [])].find((x) => x.id === id);
+    if (n) this.activate(n, cx);
+    else if (url) openLink(url);
   }
 
   // Issue type icons live on the Jira site behind the same login as the API, so they come down here, with the
