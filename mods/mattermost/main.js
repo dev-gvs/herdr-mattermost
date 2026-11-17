@@ -2342,11 +2342,13 @@ export default class Mattermost extends View {
         const c = this.channels.get(post.channel_id);
         if (!c) return this.loadSidebar(cx).then(() => { this.notifyPost(post, data); return true; });
         const root = !post.root_id;
+        // The server leaves join and leave posts out of the message counts, so they never make a channel unread.
+        const counted = !JOIN_LEAVE.has(post.type);
         c.last_post_at = post.create_at;
-        c.total_msg_count++;
+        if (counted) c.total_msg_count++;
         if (root) {
           c.last_root_post_at = post.create_at;
-          c.total_msg_count_root++;
+          if (counted) c.total_msg_count_root++;
         }
         await this.ingest(cx, [post]);
         if (root) {

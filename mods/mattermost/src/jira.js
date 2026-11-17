@@ -510,13 +510,14 @@ export class JiraInbox {
   sidebarRow(t) {
     const v = this.view;
     const active = !v.opening && v.selected === JIRA;
-    const { direct, watching } = this.counts();
-    const lit = active || direct + watching > 0;
+    // Watching is background noise, as in Jira's bell, so only Direct lights the row.
+    const { direct } = this.counts();
+    const lit = active || direct > 0;
     return div().pb(2).flex_none().child(h_flex().id("jira").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
       .when(active, (el) => el.bg(t.selected).child(v.activeBar(t))).hover((s) => s.bg(active ? t.selected : t.hover))
       .on_click((_e, cx) => this.open(cx))
       .child(v.slot(svg("mods/mattermost/icons/bell.svg").size(14).text_color(lit ? t.foreground : t.muted)))
-      .child(div().flex_1().text_color(lit ? t.foreground : t.muted).when(direct + watching > 0, (el) => el.font_semibold()).child("Jira"))
+      .child(div().flex_1().text_color(lit ? t.foreground : t.muted).when(direct > 0, (el) => el.font_semibold()).child("Jira"))
       .when(direct > 0, (el) => el.child(v.badge(direct, t))));
   }
 
