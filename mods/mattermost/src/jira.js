@@ -56,6 +56,14 @@ const MARK = {
 };
 const READ_ALL = "mutation JiraReadAll($category: InfluentsNotificationCategory, $ari: String) { notifications { markNotificationsAsRead(category: $category, collabContextRoutingAri: $ari) } }";
 
+// How long a card on screen keeps its status before asking Jira again.
+const ISSUE_STALE = 10 * 60e3;
+// Jira's lozenge colours by status category, dark and light: [background, text].
+const LOZENGE = {
+  new: [["#a1bdd914", "#9fadbc"], ["#091e420f", "#44546f"]],
+  indeterminate: [["#09326c", "#85b8ff"], ["#e9f2ff", "#0055cc"]],
+  done: [["#164b35", "#7ee2b8"], ["#dcfff1", "#216e4e"]],
+};
 // Drawn when an item has no icon or it couldn't be fetched: Jira's own issue type colours.
 const TYPES = {
   bug: ["#e5493a", null],
@@ -241,6 +249,11 @@ export class JiraInbox {
     this.seq = 0;
     // Direct ids already seen, so only new ones notify; null until the first load.
     this.seen = null;
+    // Issues linked in messages, by key: their card, null while it loads, false when it can't be had.
+    this.issues = new Map();
+    this.wantedIssues = new Set();
+    // Cards are asked for while drawing, where nothing can be fetched, so the fetch comes on the next tick.
+    cx.timer.every(250, (cx) => { if (this.wantedIssues.size && !this.fetchingIssues) cx.spawn(async (cx) => this.fetchIssues(cx)); });
     cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
     cx.timer.every(POLL, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
   }
@@ -367,6 +380,65 @@ export class JiraInbox {
       } catch {}
     }
     return got;
+  }
+
+  keyOf(url) {
+    if (!url.toLowerCase().startsWith(`${this.cfg.site.toLowerCase()}/browse/`)) return null;
+    return /^\/browse\/([A-Z][A-Z0-9_]*-\d+)(?:[/?#]|$)/.exec(url.slice(this.cfg.site.length))?.[1] ?? null;
+  }
+
+  async fetchIssues(cx) {
+    this.fetchingIssues = true;
+    const keys = [...this.wantedIssues].slice(0, 8);
+    for (const key of keys) this.wantedIssues.delete(key);
+    try {
+      const auth = this.cfg.demo ? null : await this.authHeader().catch(() => null);
+      await Promise.all(keys.map(async (key) => {
+        const old = this.issues.get(key);
+        try {
+          if (!auth) throw new Error("no login");
+          const res = await Promise.race([
+            fetch(`${this.cfg.site}/rest/api/3/issue/${key}?fields=summary,status,issuetype`, { headers: { Authorization: auth, Accept: "application/json" } }),
+            sleep(cx, TIMEOUT).then(() => null),
+          ]);
+          if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+          const f = (await res.json())?.fields ?? {};
+          this.issues.set(key, {
+            at: Date.now(),
+            summary: f.summary ?? "",
+            status: f.status?.name ?? "",
+            category: f.status?.statusCategory?.key ?? "",
+            icon: f.issuetype?.iconUrl ?? null,
+            type: (f.issuetype?.name ?? "").toLowerCase().replace(/[^a-z]/g, ""),
+          });
+        } catch {
+          // A stale card beats a bare link when only the refresh failed.
+          this.issues.set(key, old ? { ...old, at: Date.now() } : false);
+        }
+      }));
+      await this.fetchIcons(cx, keys.map((k) => this.issues.get(k)).filter(Boolean));
+    } finally {
+      this.fetchingIssues = false;
+    }
+    this.view.redraw(cx);
+  }
+
+  // Jira's inline smart link: the type icon, "KEY: summary" as a link, and the status lozenge. Null when the
+  // issue can't be had, so the caller draws the plain link.
+  issueCard(id, key, t, open) {
+    const hit = this.issues.get(key);
+    if (hit === false) return null;
+    if (hit === undefined) this.issues.set(key, null);
+    if (!hit || Date.now() - hit.at > ISSUE_STALE) this.wantedIssues.add(key);
+    const title = hit ? `${key}: ${hit.summary}` : key;
+    const [bg, fg] = (LOZENGE[hit?.category] ?? LOZENGE.new)[dark(t) ? 0 : 1];
+    return h_flex().id(id).max_w_full().h(22).px(4).gap(4).items_center().rounded(4).border_1().border_color(alpha(t.foreground, 0.16))
+      .cursor_pointer().hover((s) => s.bg(alpha(t.foreground, 0.06)))
+      .tooltip(title)
+      .on_click((_e, cx) => open(cx))
+      .child(hit ? this.icon({ icon: hit.icon, type: hit.type }) : div().size(14).m(1).flex_none().rounded(3).bg(alpha(t.foreground, 0.12)))
+      .child(div().min_w(0).truncate().text_color(t.accent).child(title))
+      .when(Boolean(hit?.status), (el) => el.child(div().flex_none().px(4).rounded(3).bg(bg).text_color(fg).text_size(12).font_semibold().line_height("16px").child(hit.status)));
   }
 
   counts() {

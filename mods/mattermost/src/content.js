@@ -102,7 +102,7 @@ export function segments(text, ctx, edited = false, scope = NO_KEYS) {
     if (whole[i]) { md.push(line); return; }
     for (const piece of images && line.includes("![") ? pieces(line) : [line]) {
       if (piece.image) { flush(); out.push(piece); }
-      else if (piece.length <= room && piece.includes(":") && hasCustom(piece, ctx)) { room -= piece.length + LINE_COST; flush(); out.push({ line: inlineLine(piece, ctx, scope) }); }
+      else if (piece.length <= room && ((piece.includes(":") && hasCustom(piece, ctx)) || hasIssueLink(piece, ctx))) { room -= piece.length + LINE_COST; flush(); out.push({ line: inlineLine(piece, ctx, scope) }); }
       else md.push(piece);
     }
   });
@@ -185,6 +185,16 @@ const hasCustom = (text, { custom }) => {
   return false;
 };
 
+// TextView can't hold a card either, so a line linking a Jira issue is drawn word by word too.
+const URL_SCAN = /https?:\/\/[^\s<>]+/g;
+const hasIssueLink = (text, { issueKey }) => {
+  if (!issueKey || !text.includes("/browse/")) return false;
+  const bare = text.includes("`") ? text.replace(/`[^`]*`/g, " ") : text;
+  URL_SCAN.lastIndex = 0;
+  for (let m; (m = URL_SCAN.exec(bare)); ) if (issueKey(m[0])) return true;
+  return false;
+};
+
 const INLINE = /`([^`]+)`|\[([^\]]+)\]\(((?:[^\s()]|\([^\s()]*\))+)[^)]*\)|(\*\*\*|\*\*|__|~~|\*(?=\S)|(?<=\S)\*|(?<![a-z0-9])_(?=\S)|(?<=\S)_(?![a-z0-9]))|:([a-z0-9_+\-]+):|(https?:\/\/[^\s<>]+)|(?<![a-z0-9/])@([a-z0-9][a-z0-9._\-]*[a-z0-9_]|[a-z0-9])|(\s+)/gi;
 
 // One line of markdown as styled words, for the lines that hold a custom emoji. `lit` is on what a key lights up.
@@ -227,7 +237,13 @@ function inlineLine(text, ctx, scope) {
       if (custom(n)) add({ custom: n, lit: lit(m.index, at) });
       else if (emoji[n]) add({ emoji: emoji[n], lit: lit(m.index, at) });
       else addText(m.index, at);
-    } else if (bare) add({ text: bare, link: bare });
+    } else if (bare) {
+      const key = ctx.issueKey?.(bare);
+      // Closing punctuation after a link belongs to the sentence, not to the card.
+      const url = key ? bare.replace(/[.,;:!?)]+$/, "") : bare;
+      add({ text: url, link: url, ...(key ? { issue: key } : {}) });
+      if (url.length < bare.length) addText(m.index + url.length, at);
+    }
     else if (who) {
       const shown = mention(who.replace(/\.$/, ""));
       if (shown) add({ mention: `@${shown}`, lit: lit(m.index, at) });

@@ -60,6 +60,8 @@ STATE["jira"] = [
      jira_note("j8", "watching", 50, False, "Bob C", "updated a page", SPEC, avatar=False)],
     [jira_note("j5", "direct", 3 * 24 * 60, True, "Ann B", "created a work item", {"key": "APP-2", "icon": "10318", "title": "Write the release notes", "status": "Backlog"})],
 ]
+JIRA_ISSUES = [{"key": w["key"], "where": w} for w in [BUG12, {"key": "BUG-9", "icon": "10318", "title": "Rotate the API keys", "status": "To Do"},
+                                                         {"key": "APP-3", "icon": "10315", "title": "Dark mode for settings", "status": "Done"}]]
 def jira_all(): return [n for g in STATE["jira"] for n in g]
 def jira_feed(pick):
     groups = sorted((g for g in STATE["jira"] if pick(g[0])), key=lambda g: g[0]["timestamp"], reverse=True)
@@ -188,6 +190,15 @@ class H(BaseHTTPRequestHandler):
                     if n["category"] == v.get("category"): n["readState"] = "read"
                 return self.send({"data": {"notifications": {"markNotificationsAsRead": "OK"}}})
             return self.send({"errors": [{"message": f"mock has no operation {op}"}]}, 400)
+        # An issue's fields, as Jira's REST API gives them to a smart link: only the issues the notifications name.
+        m = re.fullmatch(r"/rest/api/3/issue/([A-Z]+-\d+)", p)
+        if m:
+            if self.headers.get("Authorization") != JIRA_AUTH: return self.send({"message": "Unauthorized"}, 401)
+            where = next((n["where"] for n in JIRA_ISSUES if n["key"] == m[1]), None)
+            if not where: return self.send({"errorMessages": ["Issue does not exist or you do not have permission to see it."]}, 404)
+            cat = {"Done": "done", "To Do": "new", "Backlog": "new"}.get(where["status"], "indeterminate")
+            return self.send({"key": m[1], "fields": {"summary": where["title"], "status": {"name": where["status"], "statusCategory": {"key": cat}},
+                                                   "issuetype": {"name": "Bug" if where["icon"] == "10303" else "Task", "iconUrl": f"{J}/rest/api/2/universal_avatar/view/type/issuetype/avatar/{where['icon']}?size=medium"}}})
         m = re.fullmatch(r"/jira-avatars/(u-[a-z]+\.png)", p)
         if m:
             data = open(os.path.join(JIRA_ICONS, "../avatars", m[1]), "rb").read()

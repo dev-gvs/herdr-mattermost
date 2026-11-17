@@ -105,6 +105,8 @@ token = <API token>
 
 The token is read from that file for each request and goes only to your Jira site. It never goes in props, the panel's own files or its log. Issue type icons on your site are downloaded with it, as Jira's own page does; actors' pictures and icons on other hosts are downloaded without it. With `"demo": true`, any `jira` value shows made-up notifications.
 
+With the `jira` block, a link to an issue on that site shows in messages as Jira draws it: the type icon, the key and summary, and the status lozenge. A link inside code stays as typed, and an issue you can't see stays a plain link. Lines holding a card are drawn by the panel itself rather than as markdown, so their text can't be selected.
+
 ![Jira notifications](screenshots/jira.png)
 
 ## Send a message to an agent (optional)

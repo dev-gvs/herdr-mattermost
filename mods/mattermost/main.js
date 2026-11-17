@@ -467,6 +467,7 @@ export default class Mattermost extends View {
       textKeys: () => this.keys.forText(),
       channelKnown: (name) => [...this.channels.values()].some((c) => c.name === name),
       minHashtag: () => Number(this.clientConfig?.MinimumHashtagLength) || 3,
+      issueKey: (url) => this.jira?.keyOf(url) ?? null,
     };
     // Indigo's mention highlight, until the person's Mattermost theme says otherwise.
     this.mentionBg = "#133a91";
@@ -3949,6 +3950,8 @@ export default class Mattermost extends View {
       if (tok.space) return div().w(4).h(tok.lit ? 20 : 4).flex_none().when(Boolean(tok.lit), (el) => el.bg(this.mentionBg));
       if (tok.custom || tok.emoji) return tok.lit ? lit(div()).child(this.emojiEl(tok, Math.round(scale * 1.3), t)) : this.emojiEl(tok, Math.round(scale * 1.3), t);
       if (tok.mention) return div().text_color(t.accent).when(Boolean(tok.lit), lit).child(tok.mention);
+      const card = tok.issue && this.jira?.issueCard(`${key}-w${i}`, tok.issue, t, (cx) => this.follow(tok.link, cx));
+      if (card) return card;
       return div().id(`${key}-w${i}`).when(Boolean(tok.lit), lit).when(tok.bold || line.heading > 0, (el) => el.font_bold()).when(tok.italic, (el) => el.italic()).when(tok.strike, (el) => el.line_through())
         .when(Boolean(tok.code), (el) => el.px(4).rounded(4).bg(alpha(t.foreground, 0.08)).font_family(settings()?.font_family ?? "monospace").text_size(12))
         .when(Boolean(tok.link), (el) => el.text_color(t.accent).cursor_pointer().on_click((_e, cx) => this.follow(tok.link, cx)))
