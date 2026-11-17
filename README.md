@@ -107,6 +107,16 @@ The token is read from that file for each request and goes only to your Jira sit
 
 ![Jira notifications](screenshots/jira.png)
 
+## Send a message to an agent (optional)
+
+With an `agent` block in the panel's props, the bookmark in a post's hover bar becomes an outlined Claude Code mascot that starts an agent in `folder`, in a new tab of the space for that folder: the one named after it, else the one whose folder it is, else a new one. Save Message is still in the post's ⋯ menu.
+
+```json
+"props": { "agent": { "label": "Send to Claude Code", "folder": "~/Projects/app", "argv": ["claude"], "messages": ["{link}"] } }
+```
+
+The first message goes to the agent on its command line, and each later one is typed in once the turn before is done. `{link}` is the post's link. `argv` defaults to `["claude"]`, `messages` to `["{link}"]` and `label` to "Send to Claude Code". It needs `hc` (herdr-core). A second click on the same post brings back the agent it started while that one is still running.
+
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 
 ## Screenshots

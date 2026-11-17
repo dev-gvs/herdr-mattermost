@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
-import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, window as appWindow } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, spaces, window as appWindow } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
@@ -67,6 +67,8 @@ const ICON_SLOT = 16;
 // Shared state outlives the app, so a tab button can't tell a panel running now from one that ran last time
 // unless the panel keeps restamping it.
 const ALIVE_EVERY = 15e3;
+// How long a started agent may take over its turns before the messages after the first are dropped.
+const AGENT_PATIENCE = 10 * 60e3;
 
 const TOKEN_DOCS = "https://docs.mattermost.com/developers/integrate/reference/personal-access-token";
 
@@ -74,6 +76,26 @@ const TOKEN_DOCS = "https://docs.mattermost.com/developers/integrate/reference/p
 export const loginPath = () => `${appHome()}/mattermost.json`;
 
 // Null without a login, so the panel asks for one.
+// Off unless the panel's props name a folder. Save Message stays in the post menu either way.
+function agentSpec() {
+  const a = props()?.agent;
+  if (!a || typeof a !== "object" || typeof a.folder !== "string" || !a.folder) return null;
+  const list = (v, fallback) => (Array.isArray(v) && v.length ? v.map(String) : fallback);
+  return {
+    label: typeof a.label === "string" && a.label ? a.label : "Send to Claude Code",
+    folder: a.folder.replace(/^~(?=\/|$)/, home()).replace(/\/+$/, ""),
+    argv: list(a.argv, ["claude"]),
+    messages: list(a.messages, ["{link}"]),
+  };
+}
+
+// By name first: a space's folder is only where its next terminal would start, and drifts from what it holds.
+function agentSpace(folder) {
+  const local = spaces().filter((s) => !s.machine);
+  const name = folder.split("/").pop();
+  return local.find((s) => s.name === name) ?? local.find((s) => s.folder.replace(/\/+$/, "") === folder) ?? null;
+}
+
 async function config() {
   if (props()?.demo) return DEMO;
   const own = JSON.parse((await readTextFile(loginPath()).catch(() => null)) ?? "null");
@@ -2601,6 +2623,49 @@ export default class Mattermost extends View {
     return `${this.cfg.url}/${(this.teams?.find((x) => x.id === teamId) ?? this.team).name}/pl/${id}`;
   }
 
+  // The agent gets the first message on its command line, so it can't be lost while it boots. Later ones
+  // are typed in only once it has finished the turn before, as a person would.
+  sendToAgent(p, agent, cx) {
+    const link = this.postLink(p.id, this.channelOf(p.channel_id)?.team_id || this.team.id);
+    const [first, ...rest] = agent.messages.map((m) => m.replaceAll("{link}", link));
+    const name = `mm-${p.id.slice(0, 12)}`;
+    const json = async (args) => {
+      const r = await hc([args[0], "--json", ...args.slice(1)]);
+      if (r.code !== 0) throw new Error(r.stderr.trim() || `hc ${args[0]} failed`);
+      return JSON.parse(r.stdout);
+    };
+    cx.spawn(async (cx) => {
+      try {
+        // A second click on the same post goes to the agent it already started.
+        const old = await json(["get", name]).catch(() => null);
+        if (old?.state === "live") return command("agent.focus", { terminal: old.address });
+        const t = await json(["run", "--bg", "--no-parent", "--name", name, "--cwd", agent.folder, "--", ...agent.argv, ...(first ? [first] : [])]);
+        // Herdr hears of a new terminal from the core a moment after hc does, and can't give it a tab before.
+        for (let i = 0; i < 50 && !terminals().some((x) => x.address === t.address); i++) await sleep(cx, 100);
+        // terminal.keep makes its tab in the space on screen.
+        const space = agentSpace(agent.folder);
+        if (space) command("space.select", { id: space.id });
+        else command("space.new", { name: agent.folder.split("/").pop(), folder: agent.folder });
+        command("terminal.keep", { terminal: t.address, place: "tab" });
+        let turn = first ? 1 : 0;
+        const until = Date.now() + AGENT_PATIENCE;
+        for (const text of rest) {
+          for (;;) {
+            if (Date.now() > until) return;
+            const w = await json(["wait", t.address, "--timeout", "20"]);
+            // `ended` only says the wait ended. Blocked means a dialog is up, and typing would answer it.
+            if (w.exit_code != null || w.signal != null || w.status === "blocked") return;
+            if ((w.status === "done" || w.status === "idle") && w.turn >= turn) break;
+          }
+          await json(["send", t.address, text]);
+          turn++;
+        }
+      } catch (e) {
+        this.showError(`${agent.label}: ${String(e?.message ?? e)}`, cx);
+      }
+    });
+  }
+
   toggleSave(p, cx) {
     const saved = this.saved.has(p.id);
     if (saved) this.saved.delete(p.id);
@@ -3947,6 +4012,7 @@ export default class Mattermost extends View {
   // Mattermost's post menu: over the post's top right corner, above the text rather than beside it.
   postActions(p, t, key, scope, date) {
     const saved = this.saved.has(p.id);
+    const agent = agentSpec();
     const button = (id, icon, tip, on, handler) => div().id(`pa-${id}`).size(28).flex().items_center().justify_center().rounded(4).cursor_pointer()
       .text_color(on ? t.accent : alpha(t.foreground, 0.64)).when(on, (el) => el.bg(alpha(t.accent, 0.08)))
       .hover((s) => s.bg(on ? alpha(t.accent, 0.08) : alpha(t.foreground, 0.08)).text_color(on ? t.accent : alpha(t.foreground, 0.8)))
@@ -3961,7 +4027,9 @@ export default class Mattermost extends View {
     return h_flex().id(`pa-bar-${p.id}`).on_mouse_move(() => { this.moveOn ??= key; }).absolute().top(result ? -30 : date ? DATE_HALF - 6 : -12).right(16).p(4).gap(0).rounded(4).border_1().border_color(alpha(t.foreground, 0.2))
       .bg(t.background).shadow_md()
       .child(button("emoji", "smile-plus", "Add Reaction", false, popup((box) => this.openPicker(p, box))))
-      .child(button("save", saved ? "bookmark-filled" : "bookmark", saved ? "Remove from Saved" : "Save Message", saved, (_e, cx) => this.toggleSave(p, cx)))
+      .child(agent
+        ? button("agent", "claude-code", agent.label, false, (_e, cx) => this.sendToAgent(p, agent, cx))
+        : button("save", saved ? "bookmark-filled" : "bookmark", saved ? "Remove from Saved" : "Save Message", saved, (_e, cx) => this.toggleSave(p, cx)))
       .when(scope === "c", (el) => el.child(button("reply", "reply", "Reply", false, (_e, cx) => this.openReply(p.root_id || p.id, cx))))
       .child(button("more", "ellipsis", "Message actions", false, popup((box) => this.postMenu(p, box, { scope }))));
   }
