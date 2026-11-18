@@ -119,6 +119,8 @@ With an `agent` block in the panel's props, the bookmark in a post's hover bar b
 
 The first message goes to the agent on its command line, and each later one is typed in once the turn before is done. `{link}` is the post's link. `argv` defaults to `["claude"]`, `messages` to `["{link}"]` and `label` to "Send to Claude Code". It needs `hc` (herdr-core). A second click on the same post brings back the agent it started while that one is still running.
 
+With [herdr-chat](https://github.com/ChmaraX/herdr-chat) installed, `"chat": "claude"` (or another of its providers) in the block opens a chat tab instead of a terminal. `argv` isn't used then, and `hc` isn't needed. The messages go to the chat as its `prompt` prop, which needs a herdr-chat that reads it; one that doesn't opens the chat empty. A second click shows the chat again, and after its tab was closed reopens it on the same session.
+
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 
 ## Screenshots

@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
-import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, spaces, window as appWindow } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, panes, spaces, window as appWindow } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
@@ -86,7 +86,16 @@ function agentSpec() {
     folder: a.folder.replace(/^~(?=\/|$)/, home()).replace(/\/+$/, ""),
     argv: list(a.argv, ["claude"]),
     messages: list(a.messages, ["{link}"]),
+    chat: typeof a.chat === "string" && a.chat ? a.chat : null,
   };
+}
+
+// herdr-chat names a chat `c-` and eight hex digits. One post always gives the same name, so a second
+// click finds the chat the first one opened, and a closed one comes back on its session.
+function chatId(postId) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < postId.length; i++) h = Math.imul(h ^ postId.charCodeAt(i), 0x01000193);
+  return `c-${(h >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 // By name first: a space's folder is only where its next terminal would start, and drifts from what it holds.
@@ -2640,6 +2649,7 @@ export default class Mattermost extends View {
       if (r.code !== 0) throw new Error(r.stderr.trim() || `hc ${args[0]} failed`);
       return JSON.parse(r.stdout);
     };
+    if (agent.chat) return this.sendToChat(p, agent, first ? [first, ...rest] : [link], cx);
     cx.spawn(async (cx) => {
       try {
         // A second click on the same post goes to the agent it already started.
@@ -3429,6 +3439,29 @@ export default class Mattermost extends View {
       })
       .child(resizable_panel().child(view))
       .child(resizable_panel().size(this.rhsW).size_range(RHS_MIN, RHS_MAX).child(this.rhsView(t, c, false)));
+  }
+
+  // herdr-chat's own tab instead of a terminal: its `chat` mod takes the messages as a prop and sends them once,
+  // each after the turn before.
+  sendToChat(p, agent, prompt, cx) {
+    const chat = chatId(p.id);
+    cx.spawn(async (cx) => {
+      // The chat's agent runs in a hidden pane of the chat's tab, labelled with the chat.
+      const host = terminals().find((x) => x.state === "live" && x.labels?.["herdr-chat.chat"] === chat);
+      const tab = host && panes().find((x) => x.terminal === host.address)?.tab;
+      if (tab) {
+        const space = spaces().find((s) => s.tabs?.some((x) => x.id === tab));
+        if (space) command("space.select", { id: space.id });
+        return command("tab.select", { id: tab });
+      }
+      let space = agentSpace(agent.folder);
+      if (space) command("space.select", { id: space.id });
+      else {
+        command("space.new", { name: agent.folder.split("/").pop(), folder: agent.folder });
+        for (let i = 0; i < 30 && !(space = agentSpace(agent.folder)); i++) await sleep(cx, 100);
+      }
+      command("tab.new", { name: agent.chat, ...(space ? { space: space.id } : {}), mod: "chat", props: { chat, provider: agent.chat, cwd: agent.folder, prompt } });
+    });
   }
 
   backButton(id, t, tip, onClick) {
