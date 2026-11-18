@@ -23,6 +23,8 @@ STATE = {
     "channel_groups": {},
     # Jira's notifications, served on /gateway/api/graphql. Replace the list through /__mock to test the empty state.
     "jira": [],
+    # How many coming JiraFeed requests get no answer, as over a connection that stalls.
+    "jira_hang": 0,
     # Drafts as the web app would leave them, files on the server by id, and bytes a second for uploads, to watch one go up.
     "drafts": [], "files": {}, "upload_rate": 0,
 }
@@ -172,6 +174,10 @@ class H(BaseHTTPRequestHandler):
                 # As the real gateway does without the routing id: an empty context.
                 return self.send({"data": {"notifications": {"direct": {"nodes": []}, "watching": {"nodes": []}, "all": {"nodes": []}, "notificationGroup": {"nodes": []}}}})
             if op == "JiraFeed":
+                if STATE["jira_hang"] > 0:
+                    STATE["jira_hang"] -= 1
+                    time.sleep(30)
+                    return
                 data = {"direct": jira_feed(lambda n: n["category"] == "direct" and n["readState"] == "unread"),
                         "watching": jira_feed(lambda n: n["category"] == "watching" and n["readState"] == "unread")}
                 if v.get("all"): data["all"] = jira_feed(lambda n: n["category"] == v.get("category"))

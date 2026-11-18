@@ -8,8 +8,13 @@ import { jiraDemo, JIRA_DEMO_SITE } from "../demo/jira.js";
 export const JIRA = "jira";
 const ROW_PAD = 9;
 const PAGE = 50;
-const TIMEOUT = 15e3;
+// A connection can hang before TLS finishes while the next one goes straight through, so a quick retry beats a long
+// wait. Slow handshakes that do succeed take about 6 s.
+const TIMEOUT = 8e3;
+const ATTEMPTS = 3;
 const POLL = 60e3;
+// One poll lost to the network isn't worth a red line that the next poll takes away.
+const MISSES = 2;
 // Jira's bell keeps a month of notifications, and its empty state says so.
 const DAYS = 30;
 const ICONS = "data/mattermost/jira";
@@ -220,6 +225,8 @@ export function jiraFor(view, cx) {
   return new JiraInbox(view, cx, { site: spec.site.replace(/\/+$/, ""), credentials: String(spec.credentials) });
 }
 
+class NoAnswer extends Error {}
+
 export class JiraInbox {
   constructor(view, cx, cfg) {
     this.view = view;
@@ -238,6 +245,7 @@ export class JiraInbox {
     this.cursor = -1;
     this.error = null;
     this.loaded = false;
+    this.misses = 0;
     this.seq = 0;
     // Direct ids already seen, so only new ones notify; null until the first load.
     this.seen = null;
@@ -270,19 +278,25 @@ export class JiraInbox {
 
   async post(cx, operationName, query, variables) {
     const auth = await this.authHeader();
-    const res = await Promise.race([
-      fetch(`${this.cfg.site}/gateway/api/graphql`, {
-        method: "POST",
-        headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ query, operationName, variables }),
-      }),
-      sleep(cx, TIMEOUT).then(() => { throw new Error("Jira didn't answer in time"); }),
-    ]);
+    const request = JSON.stringify({ query, operationName, variables });
+    let res, failure;
+    for (let i = 0; i < ATTEMPTS && !res; i++) res = await this.ask(cx, auth, request).catch((e) => { failure = e; });
+    if (!res) throw new NoAnswer(String(failure?.message ?? failure));
     if (res.status === 401 || res.status === 403) throw new Error(`Jira didn't accept the credentials in ${this.cfg.credentials}`);
     if (!res.ok) throw new Error(`Jira answered HTTP ${res.status}`);
-    const body = await res.json();
+    const body = res.body;
     if (body?.errors?.length && !body.data) throw new Error(`Jira: ${body.errors[0]?.message ?? "request failed"}`);
     return body.data;
+  }
+
+  // The body is read inside the time limit, since a connection can stall there as well.
+  ask(cx, auth, body) {
+    const answer = fetch(`${this.cfg.site}/gateway/api/graphql`, {
+      method: "POST",
+      headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
+      body,
+    }).then(async (res) => ({ status: res.status, ok: res.ok, body: res.ok ? await res.json() : null }));
+    return Promise.race([answer, sleep(cx, TIMEOUT).then(() => { throw new Error("Jira didn't answer in time"); })]);
   }
 
   async refresh(cx) {
@@ -301,9 +315,12 @@ export class JiraInbox {
       const more = (f) => Boolean(f?.pageInfo?.hasNextPage) && (f?.nodes?.length ?? 0) >= PAGE;
       this.more = { direct: more(feeds.direct), watching: more(feeds.watching), all: more(feeds.all) };
       this.error = null;
+      this.misses = 0;
     } catch (e) {
       if (seq !== this.seq) return;
-      this.error = String(e?.message ?? e);
+      const showing = this.loaded && (!all || this.all);
+      const excused = e instanceof NoAnswer && showing && ++this.misses < MISSES;
+      if (!excused) this.error = String(e?.message ?? e);
     }
     this.loaded = true;
     this.view.redraw(cx);
