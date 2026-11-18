@@ -241,7 +241,8 @@ export function composerView(panel, box, t, { placeholder, error, files, footer 
   const border = alpha(t.foreground, box.focused ? 0.32 : 0.16);
   const frame = box.suggest.keys(v_flex().id(`composer-${box.name}`), 0).relative().bg(t.background)
     .when(!edge, (el) => el.border_2().rounded(4))
-    .when(edge, (el) => el.border_t_2().border_b_2())
+    // Edge to edge, the box ends the panel unless an error has to show under it.
+    .when(edge, (el) => el.border_t_2().when(Boolean(error), (e) => e.border_b_2()))
     .border_color(border)
     .when(!box.focused, (el) => el.hover((s) => s.border_color(alpha(t.foreground, 0.24))))
     .on_size_change((size, cx) => {
@@ -284,5 +285,5 @@ export function composerView(panel, box, t, { placeholder, error, files, footer 
   }
   return v_flex().flex_none().px(edge ? 0 : box.rhs ? 16 : 24).pt(box.rhs ? 12 : 0).font_family(FONT)
     .child(frame)
-    .child(div().h(24).flex_none().px(edge ? 16 : 0).pt(4).text_size(12).truncate().text_color(t.blocked).child(error ?? ""));
+    .when(!edge || Boolean(error), (el) => el.child(div().h(24).flex_none().px(edge ? 16 : 0).pt(4).text_size(12).truncate().text_color(t.blocked).child(error ?? "")));
 }

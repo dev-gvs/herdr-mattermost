@@ -12,6 +12,8 @@ export const longDate = (ms) => { const d = new Date(ms); return `${FULL_MONTHS[
 
 // Shares of the 484px a form has between the modal's sidebar and its scrollbar.
 const OFFSET = 80, LABEL_W = 168;
+// Set by the dialog on each render: too narrow for a label column, so forms lose their indent and stack the label over its box.
+export const layout = { narrow: false };
 
 export function button(t, id, label, onClick, { emphasis = "primary", enabled = true } = {}) {
   const primary = emphasis === "primary";
@@ -51,7 +53,7 @@ export function sectionMax(t, id, { title, inputs = [], extra, infoTop, error, f
   const info = extra && (infoTop ? div().w_full().pb(12).child(extra) : hint(t, extra));
   return v_flex().id(`pf-max-${id}`).w_full().p(12).bg(alpha(t.foreground, 0.04))
     .child(typeof title === "string" ? div().w_full().child(title) : title)
-    .child(v_flex().w_full().pt(20).when(!full, (el) => el.pl(OFFSET))
+    .child(v_flex().w_full().pt(20).when(!full && !layout.narrow, (el) => el.pl(OFFSET))
       .when(Boolean(infoTop && info), (el) => el.child(info))
       .children(inputs)
       .when(Boolean(!infoTop && info), (el) => el.child(info))
@@ -62,9 +64,11 @@ export function sectionMax(t, id, { title, inputs = [], extra, infoTop, error, f
         .child(button(t, `${id}-cancel`, cancelLabel, (_e, cx) => cancel(cx), { emphasis: "tertiary" }))));
 }
 
-export const formRow = (t, label, control) => h_flex().w_full().mb(25).items_start()
-  .child(div().w(LABEL_W).flex_none().pr(15).pt(7).text_right().font_semibold().truncate().child(label))
-  .child(div().flex_1().min_w(0).child(control));
+export const formRow = (t, label, control) => layout.narrow
+  ? v_flex().w_full().mb(16).gap(6).child(div().font_semibold().truncate().child(label)).child(control)
+  : h_flex().w_full().mb(25).items_start()
+    .child(div().w(LABEL_W).flex_none().pr(15).pt(7).text_right().font_semibold().truncate().child(label))
+    .child(div().flex_1().min_w(0).child(control));
 
 // A text box has no length limit of its own, so one that goes past `max` is cut back.
 export class Field {

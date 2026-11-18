@@ -158,9 +158,9 @@ const CACHED = 10;
 // How long a click on a channel whose posts aren't loaded keeps the previous one on screen.
 const OPEN_WAIT = 500;
 // Mattermost's .post: 1.5em of 14px plus the content's 5px, then a 53px avatar column whose 32px avatar sits 9px in.
-const POST_PAD = 26;
-const AVATAR_COL = 53;
-const AVATAR_INSET = 9;
+// A panel too narrow for the sidebar can't spare that gutter, so there the avatar starts 8px from the edge.
+const POST_GUTTER = { pad: 26, col: 53, inset: 9, right: 15 };
+const POST_GUTTER_NARROW = { pad: 8, col: 42, inset: 0, right: 8 };
 // Half the date label's height: the label is centered on the line between two posts.
 const DATE_HALF = 13;
 // TextView's own gap between paragraphs, for a message split into two blocks at a paragraph break.
@@ -2099,11 +2099,16 @@ export default class Mattermost extends View {
     this.playing = { key, rel };
   }
 
+  gutter() {
+    return this.width >= WIDE ? POST_GUTTER : POST_GUTTER_NARROW;
+  }
+
   // The room for an image in a post.
   contentWidth(scope) {
     // Pinned posts aren't in a timeline, so nothing measures them, but their panel has a known width.
     const room = scope === "c" || scope === "t" ? this.viewW : scope === "r" ? this.rhsScroll.viewW : scope === "m" || scope === "s" ? this.resultsScroll.viewW : this.rhsW;
-    return Math.max(120, (room || 480) - AVATAR_COL - POST_PAD - 15);
+    const g = this.gutter();
+    return Math.max(120, (room || 480) - g.col - g.pad - g.right);
   }
 
   // Mattermost edits in place, in the one spot it was asked from: the message becomes its editor until saved
@@ -3106,9 +3111,8 @@ export default class Mattermost extends View {
   }
 
   topBar(t, wide, back, ...children) {
-    return h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(Boolean(back), (el) => el.child(div().id("back").px(6).rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { back(); this.redraw(cx); }).child("‹")))
+    return h_flex().h(36).flex_none().pl(back ? 6 : 12).pr(12).gap(8).items_center().border_b(1).border_color(t.border)
+      .when(Boolean(back), (el) => el.child(this.backButton("back", t, "Back", (_e, cx) => { back(); this.redraw(cx); })))
       .children(children);
   }
 
@@ -3364,7 +3368,7 @@ export default class Mattermost extends View {
     const posts = this.showJoinLeave ? all : all.filter((p) => !this.hiddenPost(p));
     const rows = [];
     const from = Math.max(0, posts.length - this.shown);
-    if (this.exhausted.has(c.id) && from === 0) rows.push(["start", () => div().px(POST_PAD).pt(10).text_size(12).text_color(t.dim).child("Start of channel")]);
+    if (this.exhausted.has(c.id) && from === 0) rows.push(["start", () => div().px(this.gutter().pad).pt(10).text_size(12).text_color(t.dim).child("Start of channel")]);
     for (let i = from; i < posts.length; i++) {
       const p = posts[i], prev = posts[i - 1];
       const next = posts[i + 1];
@@ -3427,6 +3431,10 @@ export default class Mattermost extends View {
       .child(resizable_panel().size(this.rhsW).size_range(RHS_MIN, RHS_MAX).child(this.rhsView(t, c, false)));
   }
 
+  backButton(id, t, tip, onClick) {
+    return this.headerButton(id, t, false, tip, onClick, svg("mods/mattermost/icons/chevron-left.svg").size(16));
+  }
+
   headerButton(id, t, on, tip, onClick, ...children) {
     return h_flex().id(id).h(26).px(5).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12)
       .text_color(on ? t.accent : t.muted).when(on, (el) => el.bg(alpha(t.accent, 0.08)))
@@ -3444,12 +3452,12 @@ export default class Mattermost extends View {
     const tool = (kind, name, count, tip) => this.headerButton(`hd-${kind}`, t, this.rhs === kind, tip, (_e, cx) => this.openRhs(kind, cx, from(kind)),
       icon(name), ...(count != null ? [div().child(String(count))] : []));
     const info = this.rhs === "info";
-    return h_flex().h(36).flex_none().pl(wide ? 10 : 4).pr(8).gap(2).items_center().border_b(1).border_color(t.border)
-      .when(!wide, (el) => el.child(this.headerButton("back", t, false, "Back", (_e, cx) => {
+    return h_flex().h(36).flex_none().pl(wide ? 10 : 6).pr(8).gap(2).items_center().border_b(1).border_color(t.border)
+      .when(!wide, (el) => el.child(this.backButton("back", t, "Back", (_e, cx) => {
         this.selected = null;
         localStorage.removeItem("selected");
         this.redraw(cx);
-      }, div().text_size(16).child("‹"))))
+      })))
       .child(this.headerButton("hd-star", t, false, favorite ? "Remove from Favorites" : "Add to Favorites", (_e, cx) => this.toggleFavorite(c, cx),
         icon(favorite ? "star-filled" : "star").when(favorite, (el) => el.text_color(t.accent))))
       .child(h_flex().id("hd-name").min_w(0).h(28).px(4).gap(4).items_center().rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -3489,7 +3497,7 @@ export default class Mattermost extends View {
     return v_flex().h_full().min_h(0).when(replacing, (el) => el.flex_1().min_w(0)).when(!replacing, (el) => el.size_full())
       .when(this.rhsExpanded, (el) => el.on_mouse_down_out((e, cx) => shrinkOnPress(this, e, cx)))
       .child(h_flex().h(36).flex_none().pl(back ? 6 : results ? 10 : 14).pr(8).gap(results ? 6 : 8).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(back), (el) => el.child(this.headerButton("rhs-back", t, false, BACK_TIPS[this.rhsFrom] ?? "Back", back, svg("mods/mattermost/icons/chevron-left.svg").size(16))))
+        .when(Boolean(back), (el) => el.child(this.backButton("rhs-back", t, BACK_TIPS[this.rhsFrom] ?? "Back", back)))
         .child(div().when(results, (el) => el.min_w(0).truncate()).when(!results, (el) => el.flex_none()).text_size(14).font_semibold().child(titles[this.rhs]))
         .when(this.rhs === "mentions", (el) => el.child(filtersButton(this, t)))
         .when(!results, (el) => el.child(div().w(1).h(16).flex_none().bg(t.border)))
@@ -3541,7 +3549,7 @@ export default class Mattermost extends View {
     const c = this.channelOf(p.channel_id), key = `${scope}:${p.id}`;
     return v_flex().pb(8).on_mouse_move(() => { this.moveOn ??= key; })
       .child(this.separator(dateLabel(p.create_at), t))
-      .child(h_flex().h(30).px(16).pt(6).gap(4).items_center().text_color(alpha(t.foreground, 0.73))
+      .child(h_flex().h(30).px(Math.min(16, this.gutter().pad)).pt(6).gap(4).items_center().text_color(alpha(t.foreground, 0.73))
         .child(div().min_w(0).truncate().font_semibold().child(this.resultTitle(p, c)))
         .when(c?.delete_at > 0, (el) => el.child(svg("mods/mattermost/icons/archive.svg").size(14).flex_none()))
         .when(Boolean(this.resultTeam(c)), (el) => el.child(div().min_w(0).ml(4).px(8).truncate().border_l_1().border_color(alpha(t.foreground, 0.5))
@@ -3568,7 +3576,7 @@ export default class Mattermost extends View {
   resultActions(p, t, hovered, scope) {
     const count = p.reply_count ?? 0;
     const labelled = scope === "m" && this.saved.has(p.id);
-    return h_flex().absolute().top(labelled ? 33 : 8).right(15).h(20).gap(4).items_center().text_size(12).font_semibold().text_color(alpha(t.foreground, 0.4))
+    return h_flex().absolute().top(labelled ? 33 : 8).right(this.gutter().right).h(20).gap(4).items_center().text_size(12).font_semibold().text_color(alpha(t.foreground, 0.4))
       .when(this.resultArrow(p, hovered), (el) => el.child(h_flex().id(`rs-reply-${p.id}`).h(20).px(4).gap(4).items_center().rounded(4).cursor_pointer()
         .hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(t.foreground))
         .tooltip("Reply")
@@ -3861,8 +3869,9 @@ export default class Mattermost extends View {
     const [root, ...rest] = posts;
     const rows = [[root.id, () => this.postRow(root, false, t, true, { scope })]];
     // Mattermost's reply count: a short line under the avatar, the count where the author's text starts.
-    rows.push(["replies", () => h_flex().pl(POST_PAD + AVATAR_INSET).pt(12).pb(2).items_center()
-      .child(div().h(1).w(AVATAR_COL - AVATAR_INSET - 13).flex_none().bg(t.border))
+    const g = this.gutter();
+    rows.push(["replies", () => h_flex().pl(g.pad + g.inset).pt(12).pb(2).items_center()
+      .child(div().h(1).w(g.col - g.inset - 13).flex_none().bg(t.border))
       .child(div().ml(13).mr(10).text_size(12).font_semibold().text_color(t.muted).child(replies(rest.filter((p) => !isEphemeral(p)).length)))
       .child(div().h(1).flex_1().bg(t.border))]);
     const upto = Math.min(rest.length, limit);
@@ -4042,7 +4051,7 @@ export default class Mattermost extends View {
     try {
       return this.drawPost(p, grouped, t, inThread, options);
     } catch {
-      return div().id(`post-${p.id}`).pl(POST_PAD + AVATAR_COL).py(2).text_size(13).text_color(t.muted).child("This message can't be shown.");
+      return div().id(`post-${p.id}`).pl(this.gutter().pad + this.gutter().col).py(2).text_size(13).text_color(t.muted).child("This message can't be shown.");
     }
   }
 
@@ -4052,7 +4061,7 @@ export default class Mattermost extends View {
     const key = scope && `${scope}:${p.id}`;
     const hovered = Boolean(key) && this.hoverPost === key;
     const result = scope === "m" || scope === "s";
-    const row = h_flex().id(`post-${p.id}`).relative().items_start().pl(POST_PAD).pr(15)
+    const row = h_flex().id(`post-${p.id}`).relative().items_start().pl(this.gutter().pad).pr(this.gutter().right)
       .pt(date ? 8 + DATE_HALF : grouped ? 0 : 8).pb(beforeDate ? 6 + DATE_HALF : 3)
       .text_size(14).line_height("20px")
       // The expanded panel lies over these rows without blocking the pointer from them.
@@ -4093,7 +4102,7 @@ export default class Mattermost extends View {
   }
 
   systemPost(p, t) {
-    return [div().w(AVATAR_COL).flex_none(), div().flex_1().min_w(0).py(1).text_color(alpha(t.foreground, 0.75)).child(p.message)];
+    return [div().w(this.gutter().col).flex_none(), div().flex_1().min_w(0).py(1).text_color(alpha(t.foreground, 0.75)).child(p.message)];
   }
 
   userPost(p, grouped, t, inThread, hovered = false, scope = null) {
@@ -4108,10 +4117,10 @@ export default class Mattermost extends View {
     const result = scope === "m" || scope === "s";
     // Mattermost's pre-header: the bookmark at the avatar column's edge, "Saved" over the name.
     return [
-      v_flex().w(AVATAR_COL).flex_none()
+      v_flex().w(this.gutter().col).flex_none()
         .when(saved, (el) => el.child(h_flex().h(20).mb(5).pr(6).justify_end().items_center()
           .child(svg("mods/mattermost/icons/bookmark-filled.svg").size(12).text_color(t.accent))))
-        .when(!grouped, (el) => el.child(div().pt(2).pl(AVATAR_INSET).child(avatar))),
+        .when(!grouped, (el) => el.child(div().pt(2).pl(this.gutter().inset).child(avatar))),
       v_flex().flex_1().min_w(0)
         .when(saved, (el) => el.child(div().h(20).mb(5).flex().items_center().text_size(12).text_color(t.accent).child("Saved")))
         .when(!grouped, (el) => el.child(h_flex().mb(2).gap(8).items_center().when(result, (h) => h.pr(this.resultArrow(p, hovered) ? 84 : 44))

@@ -599,12 +599,13 @@ export class JiraInbox {
     const blue = BLUE[d ? 0 : 1];
     const room = v.width - (wide ? v.sideW : 0) - (v.rhsGlobal?.() && v.rhsBeside?.() ? v.rhsW : 0);
     // The row's text column: the page less its padding, the avatar, the gaps and the dot.
-    this.textW = Math.max(160, room - 16 - 32 - 12 - 12 - 24 - 16);
+    this.pad = wide ? 16 : 8;
+    this.textW = Math.max(160, room - this.pad - 32 - 12 - 12 - 24 - this.pad);
     const tab = (id, label) => {
       const on = this.tab === id;
-      return v_flex().id(`jira-tab-${id}`).h_full().justify_end().cursor_pointer()
+      return v_flex().id(`jira-tab-${id}`).h_full().flex_none().justify_end().cursor_pointer()
         .on_click((_e, cx) => this.setTab(id, cx))
-        .child(div().pb(6).font_medium().text_color(on ? blue : t.muted).hover((s) => s.text_color(on ? blue : t.foreground)).child(label))
+        .child(div().pb(wide ? 6 : 7).font_medium().text_color(on ? blue : t.muted).hover((s) => s.text_color(on ? blue : t.foreground)).child(label))
         .child(div().h(2).w_full().rounded(1).when(on, (el) => el.bg(blue)));
     };
     const on = this.unreadOnly;
@@ -612,7 +613,7 @@ export class JiraInbox {
       .hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => this.setUnreadOnly(!on, cx))
       // Below this the title would be squeezed to a letter, so the switch keeps its label in a tooltip.
-      .when(room >= 480, (el) => el.child("Only show unread")).when(room < 480, (el) => el.tooltip("Only show unread"))
+      .when(wide && room >= 480, (el) => el.child("Only show unread")).when(!wide || room < 480, (el) => el.tooltip("Only show unread"))
       .child(h_flex().w(32).h(18).flex_none().rounded(9).px(2).items_center().justify_between()
         .bg(on ? SWITCH[d ? 0 : 1] : alpha(t.foreground, 0.24))
         .child(on ? svg("mods/mattermost/icons/check.svg").size(11).text_color(t.background) : div().size(14).rounded(7).bg("#ffffff"))
@@ -626,19 +627,25 @@ export class JiraInbox {
     }, e.bounds ?? { ...e.position, width: 0, height: 0 }));
     const list = this.shown();
     const empty = on ? "You've read all your notifications from the last 30 days." : "You have no notifications from the last 30 days.";
-    const header = h_flex().h(52).flex_none().pl(wide ? 16 : 8).pr(12).gap(10).items_center()
-      .when(!wide, (el) => el.child(div().id("back").px(6).rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { v.selected = null; localStorage.removeItem("selected"); v.redraw(cx); }).child("‹")))
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(20).child("Notifications"))
-      .child(toggle)
-      .child(button("jira-site", "external-link", "Open Jira", () => openLink(this.cfg.site)))
-      .child(more);
-    return v_flex().flex_1().min_w(0).h_full()
-      .child(header)
-      .child(h_flex().h(34).flex_none().mx(16).gap(20).items_end().border_b(1).border_color(t.border)
+    const back = () => v.backButton("back", t, "Back", (_e, cx) => { v.selected = null; localStorage.removeItem("selected"); v.redraw(cx); });
+    const actions = [toggle, button("jira-site", "external-link", "Open Jira", () => openLink(this.cfg.site)), more];
+    // A panel showing one page at a time has no height for a title row: the tabs name the page, in the
+    // 36px bar the other pages have.
+    const header = wide
+      ? [h_flex().h(52).flex_none().pl(16).pr(12).gap(10).items_center()
+        .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(20).child("Notifications"))
+        .children(actions),
+      h_flex().h(34).flex_none().mx(16).gap(20).items_end().border_b(1).border_color(t.border)
         .child(tab("direct", "Direct"))
-        .child(tab("watching", "Watching")))
-      .when(Boolean(this.error), (el) => el.child(div().px(16).py(6).text_size(12).text_color(t.blocked).child(this.error)))
+        .child(tab("watching", "Watching"))]
+      : [h_flex().h(36).flex_none().pl(6).pr(12).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(back())
+        .child(h_flex().h_full().flex_none().gap(16).items_end().child(tab("direct", "Direct")).child(tab("watching", "Watching")))
+        .child(div().flex_1())
+        .children(actions)];
+    return v_flex().flex_1().min_w(0).h_full()
+      .children(header)
+      .when(Boolean(this.error), (el) => el.child(div().px(this.pad).py(6).text_size(12).text_color(t.blocked).child(this.error)))
       .child(!this.loaded || (!on && !this.all) || (this.error && !list.length)
         ? div().flex_1()
         : !list.length
@@ -663,7 +670,7 @@ export class JiraInbox {
 
   hint(t) {
     const key = (k) => div().px(5).rounded(3).bg(alpha(t.foreground, 0.1)).text_color(t.foreground).child(k);
-    return h_flex().flex_none().mx(16).px(10).py(8).gap(5).items_center().flex_wrap().rounded(4).border_1().border_color(t.border)
+    return h_flex().flex_none().mx(this.pad).px(10).py(8).gap(5).items_center().flex_wrap().rounded(4).border_1().border_color(t.border)
       .text_size(13).text_color(t.muted)
       .child("Press").child(key("↓")).child(key("↑")).child("to move through notifications.");
   }
@@ -674,7 +681,7 @@ export class JiraInbox {
     list.forEach((n, i) => {
       const label = dayLabel(n.time);
       if (label !== last) {
-        out.push(div().flex_none().px(16).pt(14).pb(4).text_size(13).font_semibold().text_color(t.foreground).child(label));
+        out.push(div().flex_none().px(this.pad).pt(14).pb(4).text_size(13).font_semibold().text_color(t.foreground).child(label));
         last = label;
       }
       out.push(this.row(n, i, t, blue));
@@ -758,11 +765,11 @@ export class JiraInbox {
       .when(open, (el) => el.child(v_flex().mt(6).gap(2)
         .when(items === null, (el) => el.child(div().py(4).text_size(12).text_color(t.muted).child("Loading…")))
         .children((items ?? []).map((x) => this.subRow(x, t, blue)))));
-    return this.dot(h_flex().id(`jn-${n.id}`).relative().px(16).py(10).gap(12).items_start().cursor_pointer()
+    return this.dot(h_flex().id(`jn-${n.id}`).relative().px(this.pad).py(10).gap(12).items_start().cursor_pointer()
       .when(picked, (el) => el.bg(t.selected)).hover((s) => s.bg(picked ? t.selected : t.hover))
       .on_click((_e, cx) => { this.cursor = i; this.activate(n, cx); })
       .child(this.avatar(n, 32))
-      .child(content), n, t, blue, 10, 16);
+      .child(content), n, t, blue, 10, this.pad);
   }
 
   subRow(n, t, blue) {

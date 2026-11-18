@@ -4,15 +4,17 @@
 // is written to shared state, which Herdr keeps on disk, so a password or token never goes in one.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { props, closeOverlay, openOverlay, theme, exec, appHome } from "herdr";
+import { props, closeOverlay, openOverlay, theme, exec, appHome, settings } from "herdr";
 import { FONT, alpha } from "../main.js";
 import { request } from "./menu.js";
 import { Media } from "./media.js";
 import { PictureSection } from "./picture.js";
 import { SecurityTab } from "./security.js";
-import { icon, errorText, shortDate, sectionMin, sectionMax, formRow, Field, selectBox, confirmLayer, closeButton, dividerDark, dividerLight, tabHeader } from "./setting_item.js";
+import { icon, errorText, shortDate, sectionMin, sectionMax, formRow, Field, selectBox, confirmLayer, closeButton, dividerDark, dividerLight, tabHeader, layout } from "./setting_item.js";
 
 const PROFILE_W = 800, PROFILE_H = 0.9;
+// Herdr shrinks the dialog to fit a window narrower than it; below this the sidebar would leave the sections no room.
+const PROFILE_NARROW = 600;
 const DEFAULT_MAX_FILE = 100 * 1024 * 1024;
 const OAUTH_SERVICES = ["gitlab", "google", "office365", "openid"];
 const RESERVED_USERNAMES = ["valet", "all", "channel", "here", "matterbot", "system"];
@@ -506,7 +508,7 @@ export class ProfileDialog {
 
   sidebarTab(t, id, label, name) {
     const on = this.tab === id;
-    return h_flex().id(`pf-tab-${id}`).w_full().h(32).flex_none().px(12).mb(8).gap(8).items_center().rounded(4).cursor_pointer().font_semibold()
+    return h_flex().id(`pf-tab-${id}`).h(32).flex_none().px(12).gap(8).when(!this.narrow, (el) => el.w_full().mb(8)).items_center().rounded(4).cursor_pointer().font_semibold()
       .text_color(on ? t.accent : alpha(t.foreground, 0.75))
       .when(on, (el) => el.bg(alpha(t.accent, 0.08)))
       .when(!on, (el) => el.hover((s) => s.bg(alpha(t.foreground, 0.04)).text_color(alpha(t.foreground, 0.8))))
@@ -517,21 +519,30 @@ export class ProfileDialog {
 
   render(cx) {
     const t = theme();
+    layout.narrow = Boolean(this.narrow);
     const content = this.tab === "profile" ? this.general.draw(t) : this.security.draw(t);
     this.pump(cx);
+    const narrow = this.narrow;
+    const tabs = [this.sidebarTab(t, "profile", "Profile Settings", "settings"), this.sidebarTab(t, "security", "Security", "lock")];
     return v_flex().id("mm-profile").relative().size_full().bg(t.popover).font_family(FONT).text_size(14).text_color(t.foreground)
+      .on_size_change((size, cx) => {
+        const now = size.width / (Number(settings()?.zoom) || 1) < PROFILE_NARROW;
+        if (now === Boolean(this.narrow)) return;
+        this.narrow = now;
+        cx.notify();
+      })
       .on_mouse_down("left", (_e, cx) => {
         if (this.general.closeMenus() | this.security.closeMenus()) cx.notify();
       })
-      .child(h_flex().flex_none().h(76).pl(32).pr(18).items_center().gap(12).border_b_1().border_color(alpha(t.foreground, 0.08))
+      .child(h_flex().flex_none().h(narrow ? 52 : 76).pl(narrow ? 16 : 32).pr(narrow ? 8 : 18).items_center().gap(12).border_b_1().border_color(alpha(t.foreground, 0.08))
         .child(div().flex_1().min_w(0).truncate().text_size(22).font_semibold().child("Profile"))
         .child(closeButton(t, "pf-close", (_e, cx) => this.hide(cx))))
+      .when(narrow, (el) => el.child(h_flex().flex_none().px(8).py(8).gap(4).border_b_1().border_color(alpha(t.foreground, 0.08)).bg(alpha(t.foreground, 0.04)).children(tabs)))
       .child(h_flex().flex_1().min_h(0).w_full().items_start()
-        .child(v_flex().w(232).h_full().flex_none().p(16).border_r_1().border_color(alpha(t.foreground, 0.08)).bg(alpha(t.foreground, 0.04))
-          .child(this.sidebarTab(t, "profile", "Profile Settings", "settings"))
-          .child(this.sidebarTab(t, "security", "Security", "lock")))
+        .when(!narrow, (el) => el.child(v_flex().w(232).h_full().flex_none().p(16).border_r_1().border_color(alpha(t.foreground, 0.08)).bg(alpha(t.foreground, 0.04))
+          .children(tabs)))
         .child(div().relative().flex_1().h_full().min_w(0)
-          .child(div().id(`pf-content-${this.tab}`).size_full().overflow_y_scroll().child(v_flex().w_full().px(30).py(20)
+          .child(div().id(`pf-content-${this.tab}`).size_full().overflow_y_scroll().child(v_flex().w_full().px(narrow ? 16 : 30).py(narrow ? 12 : 20)
             .when(Boolean(this.notice), (el) => el.child(h_flex().w_full().mb(16).px(12).py(8).gap(8).items_center().rounded(4).bg(alpha("#3db887", 0.16))
               .child(svg(icon("check")).size(16).flex_none().text_color("#3db887"))
               .child(div().flex_1().min_w(0).child(this.notice))))
