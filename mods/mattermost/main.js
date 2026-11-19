@@ -20,7 +20,7 @@ import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statu
 import { openOwnOverlay as openOverlay, isPopout, popoutName, openPopout, loadPopout, handDrafts, takeDrafts, toPanel, isExpandKey, rhsExpandKey, shrinkOnPress, rhsButtons, BACK_TIPS, POPOUT_TIP } from "./src/rhs.js";
 import { demoApi, demoStatus, DEMO } from "./demo/demo.js";
 import { Find } from "./src/find.js";
-import { foldedRail, UNFOLD_W, modeOf, listWidth, contextBeside, CONTEXT_W, sectionTabs, rail, strip, listRow, scrollList, iconTile, iconButton as barButton, button, header, headerNote, empty, nothingPicked, shortTime,
+import { foldedRail, FOLD_W, UNFOLD_W, modeOf, listWidth, contextBeside, CONTEXT_W, sectionTabs, rail, strip, listRow, scrollList, iconTile, iconButton as barButton, button, header, headerNote, empty, nothingPicked, shortTime,
   draftsList, draftReader, meList, meReader, SECTIONS, VIOLET, AMBER, countBadge } from "./src/layout.js";
 import { JIRA, jiraFor } from "./src/jira.js";
 
@@ -376,6 +376,7 @@ export default class Mattermost extends View {
       this.selected = null;
     }
     this.chatFolder = localStorage.getItem("folder") ?? "all";
+    this.folded = !this.solo && localStorage.getItem("folded") === "1";
     this.draftSel = null;
     this.meSel = "profile";
     this.strips = {};
@@ -2618,6 +2619,7 @@ export default class Mattermost extends View {
       .on_size_change((size, cx) => {
         this.width = size.width;
         this.height = size.height;
+        this.settleWidth(cx);
         const shape = this.shape();
         if (shape !== this.layoutShape) {
           this.layoutShape = shape;
@@ -2645,7 +2647,7 @@ export default class Mattermost extends View {
   }
 
   sections() {
-    return SECTIONS.filter(([key]) => key !== "jira" || this.jira);
+    return SECTIONS.filter(([key]) => key !== "find" && (key !== "jira" || this.jira));
   }
 
   // A section's count on its tab: mentions and unread threads in red, which want you; Jira's Direct and drafts in blue.
@@ -2683,17 +2685,58 @@ export default class Mattermost extends View {
     this.redraw(cx);
   }
 
-  // Herdr sizes the block, not the panel, so the panel finds the layout block it sits in. In a tab there's none.
+  // Find opens from the Chats strip, so Chats stays lit while it's up.
+  tabOn(key) {
+    return this.section === key || (key === "chats" && this.section === "find");
+  }
+
+  // Herdr sizes the block, not the panel, so the panel finds the layout block it sits in. Only a block in a row
+  // folds: in a column `px` is its height, and in a tab or as the root there's nothing to resize.
+  block() {
+    const find = (node) => (node?.children ?? []).map((c) => (node.type === "row" && c.content?.mod === "mattermost" ? c : find(c))).find(Boolean);
+    return this.solo ? null : find(layout())?.id ?? null;
+  }
+
+  foldable() {
+    return Boolean(this.block());
+  }
+
+  fold(cx) {
+    this.folded = true;
+    localStorage.setItem("folded", "1");
+    command("layout.resize", { id: this.block(), px: FOLD_W });
+    this.redraw(cx);
+  }
+
   unfold(key, cx) {
-    this.showSection(key, cx);
-    const find = (node) => node?.content?.mod === "mattermost" ? node : (node?.children ?? []).map(find).find(Boolean);
-    const block = find(layout());
-    if (block?.id) command("layout.resize", { id: block.id, px: UNFOLD_W });
+    this.folded = false;
+    localStorage.removeItem("folded");
+    if (key) this.showSection(key, cx);
+    const id = this.block();
+    if (id) command("layout.resize", { id, px: UNFOLD_W });
+    this.redraw(cx);
+  }
+
+  // Folding needs the layout's min at FOLD_W, which would let a drag leave the panel anywhere in between. Once a
+  // drag settles, a folded panel dragged wider opens, and an open one narrower than UNFOLD_W goes back to it.
+  settleWidth(cx) {
+    const at = this.settleAt = (this.settleAt ?? 0) + 1;
+    cx.timer.after(300, (cx) => {
+      if (at !== this.settleAt) return;
+      const id = this.block();
+      if (!id) {
+        if (this.folded) this.unfold(null, cx);
+        return;
+      }
+      const w = this.units();
+      if (this.folded && w > FOLD_W * 2) this.unfold(null, cx);
+      else if (!this.folded && w < UNFOLD_W - 1) command("layout.resize", { id, px: UNFOLD_W });
+    });
   }
 
   columns(t) {
     const mode = this.mode(), w = this.units();
-    if (mode === "r") return foldedRail(this, t);
+    if (this.folded) return foldedRail(this, t);
     const banner = !this.live && this.wsError && !this.bannerHidden
       ? [h_flex().h(26).flex_none().px(11).gap(8).items_center().bg(alpha(AMBER, 0.14)).text_size(12).text_color(AMBER)
         .child(svg("mods/mattermost/icons/info.svg").size(13).flex_none())
@@ -2847,8 +2890,9 @@ export default class Mattermost extends View {
     const folder = tabs.some((x) => x.key === this.chatFolder) ? this.chatFolder : "all";
     const list = folder === "all" ? everyone.sort((a, b) => lastPost(b) - lastPost(a)) : cats.find(({ cat }) => cat.id === folder).chans;
     const mutedCats = new Set(cats.filter(({ cat }) => cat.muted).flatMap(({ chans }) => chans.map((c) => c.id)));
+    const find = [barButton("chats-find", t, "search", "Find channels and people", (_e, cx) => this.showSection("find", cx))];
     return v_flex().flex_1().min_h(0)
-      .child(strip(this, t, { id: "chats", tabs, current: folder, stretch: true, onPick: (key, cx) => {
+      .child(strip(this, t, { id: "chats", tabs, current: folder, stretch: true, right: find, onPick: (key, cx) => {
         this.chatFolder = key;
         localStorage.setItem("folder", key);
         cx.notify(this.sidePart);

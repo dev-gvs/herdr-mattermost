@@ -7,9 +7,10 @@ import { v_flex, h_flex } from "gpui-base";
 import { settings } from "herdr";
 import { alpha, clock, MONTHS } from "../main.js";
 
-export const RAIL = 160, NARROW = 620, FULL = 1500;
-// The width a click on the folded rail opens the panel to: the chat block's smallest size before it could fold.
-export const UNFOLD_W = 420;
+export const NARROW = 620, FULL = 1500;
+// The block's widths folded and open. The layout's `min` has to allow FOLD_W, so the panel itself keeps a drag
+// from leaving it narrower than UNFOLD_W.
+export const FOLD_W = 52, UNFOLD_W = 420;
 export const CONTEXT_W = { m: 360, f: 460 };
 const READER_MIN = 420;
 export const ROW_H = 56;
@@ -36,7 +37,7 @@ export const SECTIONS = [
 const zoom = () => Number(settings()?.zoom) || 1;
 const icon = (name, size = 16) => svg(`mods/mattermost/icons/${name}.svg`).size(size).flex_none();
 
-export const modeOf = (w) => (w < RAIL ? "r" : w < NARROW ? "n" : w < FULL ? "m" : "f");
+export const modeOf = (w) => (w < NARROW ? "n" : w < FULL ? "m" : "f");
 export const listWidth = (mode, w) => (mode === "f" ? 400 : Math.round(Math.max(280, Math.min(360, w * 0.3))));
 // A thread or details sit beside the reader while it keeps room to read, and replace it otherwise.
 export const contextBeside = (mode, w) => mode === "f" || (mode === "m" && w - listWidth(mode, w) - CONTEXT_W.m >= READER_MIN);
@@ -128,8 +129,15 @@ export function sectionTabs(panel, t, mode) {
   const narrow = mode === "n";
   return h_flex().h(narrow ? 44 : 38).flex_none().border_b_1().border_color(t.border)
     .when(panel.frame, (el) => el.rounded_t(9))
+    .when(panel.foldable(), (el) => el.child(div().flex_1().min_w(0).h_full().p(3)
+      .child(v_flex().id("tab-fold").size_full().rounded(7).items_center().justify_center().gap(2).cursor_pointer()
+        .text_size(11).font_semibold().text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Collapse")
+        .on_click((_e, cx) => panel.fold(cx))
+        .child(icon("panel-left-close", narrow ? 16 : 17))
+        .when(narrow, (el) => el.child(div().line_height("14px").child("Collapse"))))))
     .children(panel.sections().map(([key, label, name]) => {
-      const on = panel.section === key, n = panel.sectionBadge(key);
+      const on = panel.tabOn(key), n = panel.sectionBadge(key);
       // The highlight is inset because a square one would poke through the rounded corners of the block around the panel.
       return div().relative().flex_1().min_w(0).h_full().p(3)
         .child(v_flex().id(`tab-${key}`).size_full().rounded(7).items_center().justify_center().gap(2).cursor_pointer()
@@ -148,6 +156,12 @@ export function sectionTabs(panel, t, mode) {
 // say something new arrived. A click opens the panel on that section.
 export function foldedRail(panel, t) {
   return v_flex().size_full().py(6).gap(2).items_center()
+    .child(div().id("fold-open").w(40).h(38).flex_none().flex().items_center().justify_center().rounded(7).cursor_pointer()
+      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip("Expand")
+      .on_click((_e, cx) => panel.unfold(null, cx))
+      .child(icon("panel-left-open", 17)))
+    .child(div().w(28).h(1).my(3).flex_none().bg(t.border))
     .children(panel.sections().map(([key, label, name]) => {
       const n = panel.sectionBadge(key);
       return div().id(`fold-${key}`).relative().w(40).h(38).flex_none().flex().items_center().justify_center().rounded(7).cursor_pointer()
@@ -163,7 +177,7 @@ export function foldedRail(panel, t) {
 // The full panel's rail: the sections with their names, and you at the bottom.
 export function rail(panel, t) {
   const item = ([key, label, name]) => {
-    const on = panel.section === key, n = panel.sectionBadge(key);
+    const on = panel.tabOn(key), n = panel.sectionBadge(key);
     return h_flex().id(`rail-${key}`).relative().h(32).flex_none().px(14).gap(10).items_center().cursor_pointer().text_size(13)
       .text_color(on ? t.foreground : t.muted).when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover).text_color(t.foreground))
       .on_click((_e, cx) => panel.showSection(key, cx))
@@ -175,6 +189,10 @@ export function rail(panel, t) {
   const on = panel.section === "me";
   const custom = panel.myCustomStatus();
   return v_flex().w(220).flex_none().h_full().py(8).border_r_1().border_color(t.border)
+    .when(panel.foldable(), (el) => el.child(h_flex().id("rail-fold").h(32).flex_none().px(14).gap(10).items_center().cursor_pointer().text_size(13)
+      .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => panel.fold(cx))
+      .child(icon("panel-left-close", 16)).child(div().flex_1().min_w(0).truncate().child("Collapse"))))
     .children(panel.sections().filter(([key]) => key !== "me").map(item))
     .child(div().flex_1())
     .when(Boolean(me), (el) => el.child(h_flex().id("rail-me").relative().h(42).flex_none().px(14).gap(10).items_center().cursor_pointer()
