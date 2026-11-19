@@ -365,7 +365,7 @@ export class ProfileDialog {
     this.demoAvatar = spec.avatar;
     this.license = {};
     this.canEditOtherUsers = false;
-    this.tab = "profile";
+    this.tab = spec.tab === "security" ? "security" : "profile";
     this.section = "";
     this.hover = null;
     this.confirm = null;

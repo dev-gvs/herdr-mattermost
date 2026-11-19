@@ -1,35 +1,34 @@
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, h_resizable, resizable_panel } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, TextView, v_resizable, resizable_panel } from "gpui-base";
 import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, panes, spaces, window as appWindow } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
 import { Menu } from "./src/menu.js";
 import { EmojiPicker, PICKER_W, PICKER_H } from "./src/picker.js";
-import { Switcher, SWITCHER_W, SWITCHER_H } from "./src/switcher.js";
 import { EditDialog, StatusCard } from "./src/dialog.js";
 import { Lightbox, handleImageRequest, openImageMenu } from "./src/image.js";
 import { ProfileDialog, openProfileDialog } from "./src/profile.js";
 import { StatusDialog, DndDialog, STATUS_W, STATUS_H, DND_W, DND_H, SUGGESTIONS } from "./src/status.js";
 import { SPECIAL, prepare, segments, jumbo, mentionNames } from "./src/content.js";
 import { Suggest, Directory } from "./src/suggest.js";
-import { composerView, noteText, insertAtCaret, iconButton, takeFilePaste, FORMAT_PREF } from "./src/composer.js";
+import { composerView, noteText, insertAtCaret, takeFilePaste } from "./src/composer.js";
 import { filePreviews, canUpload, pasteFiles, pruneLocal } from "./src/upload.js";
-import { PriorityPicker, openPriorityPicker, priorityEnabled, priorityLabels, priorityTag, hasPriority } from "./src/priority.js";
+import { priorityEnabled, priorityTag, hasPriority } from "./src/priority.js";
 import { HighlightKeys, NO_KEYS } from "./src/highlight.js";
 import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statusFromCommand, firstStart, forgetStart } from "./src/reset_status.js";
-import { FiltersMenu, NO_FILTERS, hasMentionFilters, mentionKeysForTypes, mentionQuery, filterChips } from "./src/mentions.js";
-import { openOwnOverlay as openOverlay, isPopout, popoutName, openPopout, loadPopout, handDrafts, takeDrafts, toPanel, isExpandKey, rhsExpandKey, shrinkOnPress, rhsButtons, filtersButton, BACK_TIPS, POPOUT_TIP } from "./src/rhs.js";
+import { openOwnOverlay as openOverlay, isPopout, popoutName, openPopout, loadPopout, handDrafts, takeDrafts, toPanel, isExpandKey, rhsExpandKey, shrinkOnPress, rhsButtons, BACK_TIPS, POPOUT_TIP } from "./src/rhs.js";
 import { demoApi, demoStatus, DEMO } from "./demo/demo.js";
+import { Find } from "./src/find.js";
+import { modeOf, listWidth, contextBeside, CONTEXT_W, sectionTabs, rail, strip, listRow, scrollList, iconTile, iconButton as barButton, button, header, headerNote, empty, nothingPicked, shortTime,
+  draftsList, draftReader, meList, meReader, SECTIONS, VIOLET, AMBER, countBadge } from "./src/layout.js";
 import { JIRA, jiraFor } from "./src/jira.js";
 
 const PAGE = 60;
 const THREAD_PAGE = 30;
-const WIDE = 620;
 const GROUP_GAP = 5 * 60e3;
 // Mattermost's default for how many direct and group messages the sidebar lists.
 const DM_LIMIT = 40;
-const THREAD_LIST_W = 420;
 const ATTEMPTS = 3;
 const TIMEOUT = 15e3;
 // A server gives an integration's command 30 seconds by default, and a command may not be safe to send twice.
@@ -43,27 +42,17 @@ const PARSED = 800;
 const ROW_BUDGET = 35;
 const THREADS = "threads";
 const DRAFTS = "drafts";
-// The right-hand panel's lists that aren't about the open channel.
-const RESULTS = new Set(["mentions", "saved"]);
-const RESULT_PAGE = { mentions: 20, saved: 60 };
 const AROUND = 30;
 // How long a post you jumped to stays lit, as Mattermost's PERMALINK_FADEOUT.
 const HIGHLIGHT = 5000;
-// They match far more posts than people think of as a mention of them, so Mattermost's search leaves them out.
-const CHANNEL_WIDE = ["@channel", "@all", "@here"];
 const RHS_WIDE_SCREEN = 1280;
 const EDIT_KEY = "edit:";
-const EDIT_ROWS = 14, MIN_BOX_ROWS = 3, BOX_LINE = 20;
-const BAR_H = 36;
-const ACCOUNT_W = 264;
+// The message box grows to 176px, eight lines; an edit in place gets more.
+const EDIT_ROWS = 14, BOX_ROWS = 8;
 const NO_SUCH_COMMAND = "api.command.execute_command.not_found.app_error";
 // Decoded frames of the animations played so far. Herdr keeps them until it quits, so past this they open in a player.
 const ANIMATION_BUDGET = 512 * 1024 * 1024;
 const UNKNOWN_ANIMATION = 64 * 1024 * 1024;
-// Every sidebar icon sits in a 16px slot centered 17px from the pane edge, under the header's logo:
-// ROW_PAD + ICON_SLOT / 2 = 17. Rows run edge to edge, as in Mattermost.
-const ROW_PAD = 9;
-const ICON_SLOT = 16;
 // Shared state outlives the app, so a tab button can't tell a panel running now from one that ran last time
 // unless the panel keeps restamping it.
 const ALIVE_EVERY = 15e3;
@@ -75,7 +64,6 @@ const TOKEN_DOCS = "https://docs.mattermost.com/developers/integrate/reference/p
 // The server and token live in the Herdr home, outside the mod folder, so sharing the mod can't take them along.
 export const loginPath = () => `${appHome()}/mattermost.json`;
 
-// Null without a login, so the panel asks for one.
 // Off unless the panel's props name a folder. Save Message stays in the post menu either way.
 function agentSpec() {
   const a = props()?.agent;
@@ -151,6 +139,7 @@ const LINK_ID = /^[\w-]{1,64}$/;
 export const alpha = (color, a) => (/^#[0-9a-f]{6}$/i.test(color) ? `${color}${pad(Math.round(a * 255).toString(16))}` : color);
 // The panel assumes collapsed reply threads, so the sidebar orders and counts by root posts, as Mattermost does then.
 const lastPost = (c) => c.last_root_post_at || c.last_post_at || c.create_at;
+const previewOf = (p) => ({ id: p.id, at: p.create_at, user: p.user_id, text: p.message, files: postFileIds(p).length, system: isSystem(p) });
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const replies = (n) => plural(n, "reply", "replies");
 const SHORTCODES = /:([a-z0-9_+\-]+):/gi;
@@ -166,27 +155,18 @@ const serverDraft = (s) => ({ ...pick(s, ["channel_id", "root_id", "message", "f
 const CACHED = 10;
 // How long a click on a channel whose posts aren't loaded keeps the previous one on screen.
 const OPEN_WAIT = 500;
-// Mattermost's .post: 1.5em of 14px plus the content's 5px, then a 53px avatar column whose 32px avatar sits 9px in.
-// A panel too narrow for the sidebar can't spare that gutter, so there the avatar starts 8px from the edge.
-const POST_GUTTER = { pad: 26, col: 53, inset: 9, right: 15 };
-const POST_GUTTER_NARROW = { pad: 8, col: 42, inset: 0, right: 8 };
+// The 32px avatar 12px in with 9px to the text, and the text 12px short of the edge.
+const POST_GUTTER = { pad: 12, col: 41, inset: 0, right: 12 };
+// About 75 characters of 14px Open Sans, so a line stays readable in a wide panel.
+const TEXT_W = 600;
+// The conversation's column in a full panel.
+const CONVERSATION_W = 760;
 // Half the date label's height: the label is centered on the line between two posts.
 const DATE_HALF = 13;
 // TextView's own gap between paragraphs, for a message split into two blocks at a paragraph break.
 const PARAGRAPH_GAP = "0.75rem";
-// A category's channels start their icon under its name's first letter, so it reads which group they
-// belong to: the name follows the chevron's slot and a 6px gap, and a 14px icon sits 1px into its slot.
-const INDENT = ICON_SLOT + 6 - 1;
-const RHS_W = 360;
 const scrollState = () => ({ offset: 0, viewH: 0, viewW: 0, contentH: 0, heights: new Map() });
 const STATUS = { online: ["online", "#3db887"], away: ["away", "#f5ab00"], dnd: ["dnd", "#d24b4e"] };
-const RHS_MIN = 280;
-const RHS_MAX = 640;
-const SIDE_W = 260;
-const SIDE_MIN = 180;
-const SIDE_MAX = 480;
-// The side view sits beside the messages while they keep this much width; narrower, it takes their place.
-const MESSAGES_MIN = 420;
 // Mattermost's own UI font, so text and weights match the desktop app.
 export const FONT = "Open Sans";
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
@@ -332,10 +312,6 @@ export default class Mattermost extends View {
       this.popup = new StatusCard();
       return;
     }
-    if (props()?.filtersMenu) {
-      this.popup = new FiltersMenu(this, cx);
-      return;
-    }
     if (props()?.lightbox) {
       this.cfgReady = config().then((cfg) => { this.cfg = cfg; });
       this.popup = new Lightbox(this, cx);
@@ -370,15 +346,6 @@ export default class Mattermost extends View {
       this.popup = new Menu(this);
       return;
     }
-    if (props()?.switcher) {
-      this.cfgReady = config().then((cfg) => { this.cfg = cfg; });
-      this.popup = new Switcher(this, cx);
-      return;
-    }
-    if (props()?.priorityPicker) {
-      this.popup = new PriorityPicker();
-      return;
-    }
     if (props()?.picker) {
       this.cfgReady = config().then((cfg) => { this.cfg = cfg; });
       this.popup = new EmojiPicker(this, cx);
@@ -402,6 +369,19 @@ export default class Mattermost extends View {
     this.threadTotals = { total_unread_threads: 0, total_unread_mentions: 0 };
     this.solo = isPopout();
     this.selected = this.solo ? null : localStorage.getItem("selected");
+    // Which section is up, and what's picked in the ones with no state of their own elsewhere.
+    this.section = this.solo ? null : localStorage.getItem("section") ?? "chats";
+    if ([THREADS, DRAFTS, JIRA].includes(this.selected)) {
+      this.section = this.selected;
+      this.selected = null;
+    }
+    this.chatFolder = localStorage.getItem("folder") ?? "all";
+    this.draftSel = null;
+    this.meSel = "profile";
+    this.strips = {};
+    // The newest root post of each conversation, for its row's preview, by channel id.
+    this.previews = new Map();
+    this.wantedPreviews = new Set();
     this.jira = this.solo ? null : jiraFor(this, cx);
     this.thread = null;
     this.live = false;
@@ -434,15 +414,13 @@ export default class Mattermost extends View {
     this.keepHover = null;
     this.rhsThread = null;
     this.rhsScroll = scrollState();
-    this.results = {};
-    this.resultsScroll = scrollState();
+    this.threadScroll = scrollState();
     // Conversations posts in those lists come from that the sidebar doesn't have: closed, left or archived ones.
     this.extraChannels = new Map();
     // A channel showing posts around one you jumped to, cut off from its newest ones.
     this.detached = null;
     this.highlighted = null;
     // What a mention search looks for.
-    this.mentionKeys = [];
     this.keys = new HighlightKeys(this);
     // Mattermost's auto_reset_manual_status preference: empty until you've answered with "Do not ask me again".
     this.autoResetPref = "";
@@ -456,13 +434,7 @@ export default class Mattermost extends View {
     this.rhs = null;
     this.rhsFrom = null;
     this.rhsExpanded = false;
-    this.mentionFilters = NO_FILTERS;
-    // The team the filters chose; null is the panel's own, or every team where the filters offer a choice.
-    this.mentionTeam = null;
-    this.filterable = new Map();
     this.popouts = new Map();
-    this.sideW = Number(localStorage.getItem("sideW")) || SIDE_W;
-    this.rhsW = Number(localStorage.getItem("rhsW")) || RHS_W;
     this.editHover = null;
     this.stats = new Map();
     this.rhsData = { members: new Map(), pinned: new Map(), files: new Map() };
@@ -485,17 +457,12 @@ export default class Mattermost extends View {
     this.input = TextareaState.new();
     this.replyInput = TextareaState.new();
     this.threadInput = TextareaState.new();
-    // The boxes are reused, so `key` says whose draft each one holds right now; see bindDrafts. `where` names
-    // Mattermost's preference for showing the formatting bar: the thread page shares the channel's, and only
-    // the right-hand side's reply box narrows its bar by the right-hand side's widths.
+    // The boxes are reused, so `key` says whose draft each one holds right now; see bindDrafts.
     this.boxes = [
-      { input: this.input, thread: false, key: null, name: "post", where: "post", rhs: false },
-      { input: this.replyInput, thread: true, key: null, name: "reply", where: "comment", rhs: true },
-      { input: this.threadInput, thread: true, key: null, name: "thread", where: "post", rhs: false },
+      { input: this.input, thread: false, key: null, name: "post" },
+      { input: this.replyInput, thread: true, key: null, name: "reply" },
+      { input: this.threadInput, thread: true, key: null, name: "thread" },
     ];
-    this.formatHidden = { post: false, comment: false, edit: false };
-    // A priority chosen before there's any text, which has no draft to live in yet.
-    this.pendingPriority = new Map();
     // Files on their way up, by draft, and what's known of the files drafts hold.
     this.uploads = new Map();
     // Small pictures made from the files picked or pasted here, by upload and then by file id.
@@ -535,8 +502,7 @@ export default class Mattermost extends View {
     this.frame = Boolean(props()?.frame);
     this.focus = cx.focus_handle();
     for (const box of this.boxes) {
-      box.previewFocus = cx.focus_handle();
-      box.input.set_auto_grow(1, EDIT_ROWS);
+      box.input.set_auto_grow(1, BOX_ROWS);
       box.suggest = this.newSuggest(cx, box.input, () => ({
         channel: box.thread ? this.drafts.get(box.key)?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key,
         root: box.thread ? box.key : "",
@@ -563,7 +529,6 @@ export default class Mattermost extends View {
         box.suggest.submit(e, cx, (cx) => this.send(box, cx));
       });
     }
-    edit.previewFocus = cx.focus_handle();
     edit.part = this.parts["composer-edit"] = cx.new(Part, { owner: this.ownerKey, part: "composer-edit" });
     edit.suggest.host = edit.part;
     this.urlInput = InputState.new({ placeholder: "https://chat.example.com" });
@@ -571,6 +536,7 @@ export default class Mattermost extends View {
     this.tokenInput.set_masked(true);
     this.urlInput.on("submit", () => this.tokenInput.focus());
     this.tokenInput.on("submit", (_e, cx) => cx.spawn(async (cx) => this.connectLogin(cx)));
+    this.find = new Find(this);
 
     cx.timer.every(60e3, (cx) => cx.spawn(async (cx) => {
       if (!this.me) return;
@@ -587,6 +553,13 @@ export default class Mattermost extends View {
     });
 
     // Downloads run outside render; this picks up whatever the last render asked for.
+    // Rows ask for their previews while drawing, where nothing can be fetched, so the fetches come from here.
+    cx.timer.every(250, (cx) => {
+      if (!this.me) return;
+      if (this.wantedPreviews.size && !this.fetchingPreviews) cx.spawn(async (cx) => this.fetchPreviews(cx));
+      if (this.peekLoad) cx.spawn(async (cx) => this.loadPeek(this.peekLoad, cx));
+    });
+
     cx.timer.every(1000, (cx) => {
       const t = theme(), look = `${t.background}${t.foreground}${t.accent}${t.border}`;
       this.publishBadge();
@@ -835,14 +808,19 @@ export default class Mattermost extends View {
       await this.loadDrafts(cx);
       return loadPopout(this, cx);
     }
-    // The page stays selected across restarts, and the prop may be gone since.
-    if (this.selected === JIRA && !this.jira) this.selected = null;
+    // The section stays across restarts, and the prop may be gone since. The `channel` prop picks what opens
+    // first only until the panel has a place of its own.
     const wanted = props()?.channel;
-    if (wanted && !this.selected) this.selected = wanted === THREADS || wanted === DRAFTS || wanted === JIRA ? wanted : [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
+    if (wanted && !this.selected && localStorage.getItem("section") == null) {
+      if ([THREADS, DRAFTS, JIRA, "find", "me"].includes(wanted)) this.section = wanted;
+      else this.selected = [...this.channels.values()].find((c) => c.name === wanted || c.display_name === wanted)?.id ?? null;
+    }
+    if (this.section === JIRA && !this.jira) this.section = "chats";
     await this.loadDrafts(cx);
+    if (this.section === DRAFTS && !this.selectedDraft()) this.draftSel = this.filedDrafts()[0] ? draftKey(this.filedDrafts()[0]) : null;
     if (props()?.thread && !this.thread) await this.openThread(props().thread, cx);
-    if (this.selected === THREADS) await this.loadThreads(cx);
-    else if (this.selected && this.channels.has(this.selected)) await this.open(this.selected, cx);
+    if (this.section === THREADS) await this.loadThreads(cx);
+    if (this.selected && this.channels.has(this.selected)) await this.open(this.selected, cx, false);
   }
 
   async loadSidebar(cx) {
@@ -858,7 +836,6 @@ export default class Mattermost extends View {
     this.teamsOrder = prefs.find((x) => x.category === "teams_order")?.value ?? "";
     this.skinTone = prefs.find((x) => x.category === "emoji" && x.name === "emoji_skintone")?.value ?? "default";
     this.autoResetPref = prefs.find((x) => x.category === "auto_reset_manual_status" && x.name === this.me.id)?.value ?? "";
-    this.formatHidden = Object.fromEntries(["post", "comment", "edit"].map((name) => [name, prefs.some((x) => x.category === FORMAT_PREF && x.name === name && x.value === "true")]));
     try {
       this.recentEmoji = new Set(JSON.parse(prefs.find((x) => x.category === "recent_emojis" && x.name === this.me.id)?.value ?? "[]").map((r) => r.name));
     } catch {}
@@ -1031,7 +1008,12 @@ export default class Mattermost extends View {
     return this.members.get(c.id)?.notify_props?.mark_unread === "mention";
   }
 
+  // Counts are worked out once per change: whatever changes them clears `rows`.
   unread(c) {
+    if (!this.rows) {
+      this.unreadMemo = new Map();
+      this.rows = true;
+    }
     let u = this.unreadMemo.get(c.id);
     if (u) return u;
     const m = this.members.get(c.id);
@@ -1043,6 +1025,7 @@ export default class Mattermost extends View {
     return u;
   }
 
+  // The categories with their conversations in the order they're sorted by, the direct messages cut to the limit.
   sidebar() {
     return this.categories.map((cat) => {
       let chans = cat.channel_ids.map((id) => this.channels.get(id)).filter(Boolean);
@@ -1050,14 +1033,13 @@ export default class Mattermost extends View {
       else if (cat.sorting !== "manual") chans.sort((a, b) => lastPost(b) - lastPost(a));
       const wanted = (c) => c.id === this.selected || this.unread(c).count > 0 || this.unread(c).mentions > 0;
       if (cat.type === "direct_messages") chans = chans.filter((c, i) => i < this.dmLimit || wanted(c));
-      return { cat, chans: cat.collapsed ? chans.filter(wanted) : chans };
+      return { cat, chans };
     });
   }
 
   select(id) {
     if (id !== this.selected) this.rhsExpanded = false;
     this.selected = id;
-    this.thread = null;
     this.rows = null;
     this.resetScroll();
     localStorage.setItem("selected", id);
@@ -1071,8 +1053,14 @@ export default class Mattermost extends View {
 
   // A channel whose posts aren't here yet leaves the one on screen up for a moment while they load, so
   // the messages don't blink out in between; the sidebar marks the new one at once.
-  async open(id, cx) {
+  // `show` brings Chats up; a load in the background opens the channel without leaving the section.
+  async open(id, cx, show = true) {
     if (this.solo) return toPanel({ action: "open", channel: id });
+    if (show && this.section !== "chats") {
+      this.section = "chats";
+      localStorage.setItem("section", "chats");
+      this.rhsExpanded = false;
+    }
     const loading = this.working(() => this.fetchChannel(id, cx));
     if (!this.posts.has(id)) {
       this.opening = id;
@@ -1087,10 +1075,10 @@ export default class Mattermost extends View {
       this.rhsFrom = null;
     }
     this.select(id);
-    this.input.focus();
+    if (show) this.input.focus();
     this.redraw(cx);
     this.loadStats(cx, id);
-    if (this.rhs && !RESULTS.has(this.rhs)) this.loadRhs(cx);
+    if (this.rhs) this.loadRhs(cx);
     await loading;
     this.redraw(cx);
   }
@@ -1114,7 +1102,6 @@ export default class Mattermost extends View {
 
   loadRhs(cx) {
     const id = this.selected, kind = this.rhs, c = this.channels.get(id);
-    if (RESULTS.has(kind)) return this.loadResults(kind, cx);
     if (!c || kind === "info" || kind === "thread") return;
     cx.spawn(async (cx) => {
       try {
@@ -1140,44 +1127,8 @@ export default class Mattermost extends View {
     });
   }
 
-  // Results aren't about the open channel, so they and a thread opened from them stay up on any page.
-  rhsGlobal() {
-    return RESULTS.has(this.rhs) || (this.rhs === "thread" && RESULTS.has(this.rhsFrom));
-  }
-
   channelOf(id) {
     return this.channels.get(id) ?? this.extraChannels.get(id);
-  }
-
-  openResults(kind, cx) {
-    if (this.rhs !== kind) {
-      this.resultsScroll = scrollState();
-      // Opening Recent Mentions starts with no filters, as Mattermost's showMentions does.
-      if (kind === "mentions") {
-        this.mentionFilters = NO_FILTERS;
-        this.mentionTeam = null;
-      }
-    }
-    this.openRhs(kind, cx);
-  }
-
-  applyMentionFilters(filters, team, cx) {
-    this.mentionFilters = filters;
-    this.mentionTeam = team;
-    this.resultsScroll = scrollState();
-    this.loadResults("mentions", cx, 0, true);
-    this.redraw(cx);
-  }
-
-  mentionSearchKeys() {
-    return mentionKeysForTypes(this.mentionFilters.mentionTypes, this.me.username, this.keys.keys.map((k) => k.key), this.keys.mine.map((g) => `@${g.name}`));
-  }
-
-  // Where the filters offer a choice of team, no choice means every team, as in Mattermost.
-  mentionSearchRoute() {
-    if (this.mentionTeam) return `/teams/${this.mentionTeam}/posts/search`;
-    if (this.clientConfig?.EnableCrossTeamSearch === "true" && this.teams?.length > 1) return "/posts/search";
-    return `/teams/${this.team.id}/posts/search`;
   }
 
   // What notifies you, as Mattermost's getCurrentUserMentionKeys and getMyGroupMentionKeys build it.
@@ -1188,49 +1139,7 @@ export default class Mattermost extends View {
 
   // A parsed message holds its highlights, so it has to be parsed again.
   mentionKeysChanged() {
-    this.mentionKeys = [...new Set(this.keys.terms())].filter((k) => k.trim() && !CHANNEL_WIDE.includes(k));
     this.textRev++;
-  }
-
-  // The panel shows one team, so both lists keep to it and the conversations that belong to no team.
-  resultsPage(kind, page, cx) {
-    if (kind === "saved") return this.api(cx, `/users/${this.me.id}/posts/flagged?team_id=${this.team.id}&page=${page}&per_page=${RESULT_PAGE.saved}`);
-    return this.api(cx, this.mentionSearchRoute(), { method: "POST", body: {
-      terms: mentionQuery(this.mentionSearchKeys(), this.mentionFilters),
-      is_or_search: true, include_deleted_channels: true, time_zone_offset: -new Date().getTimezoneOffset() * 60, page, per_page: RESULT_PAGE.mentions,
-    } });
-  }
-
-  // What's already on screen stays there while a reload runs.
-  // `fresh` starts over with what's asked now, and an answer still on its way to the old question is dropped.
-  loadResults(kind, cx, page = 0, fresh = false) {
-    const r = this.results[kind] ??= { posts: null, page: 0, done: false, loading: false, error: null };
-    if (r.loading && !fresh) return;
-    r.loading = true;
-    const run = r.run = (r.run ?? 0) + 1;
-    cx.spawn(async (cx) => this.working(async () => {
-      try {
-        // With no keys, an in: or date filter alone would return every post it allows rather than the mentions among them.
-        const res = kind === "mentions" && !this.mentionSearchKeys().length ? { order: [], posts: {} } : await this.resultsPage(kind, page, cx);
-        const posts = res.order.map((id) => res.posts[id]);
-        await this.ingest(cx, posts);
-        await this.fetchExtraChannels(cx, posts);
-        const unknown = [...new Set(posts.map((p) => p.user_id))].filter((u) => !this.statuses.has(u) && this.authors.has(u));
-        if (unknown.length) await this.loadStatuses(cx, unknown);
-        if (run !== r.run) return;
-        this.loadFollowing(cx, posts.filter((p) => !p.root_id));
-        const have = new Set(page ? r.posts.map((p) => p.id) : []);
-        r.posts = [...(page ? r.posts : []), ...posts.filter((p) => !have.has(p.id))];
-        r.page = page;
-        r.done = posts.length < RESULT_PAGE[kind];
-        r.error = null;
-      } catch (e) {
-        if (run !== r.run) return;
-        r.error = e?.text ?? String(e?.message ?? e);
-      }
-      r.loading = false;
-      this.redraw(cx);
-    }));
   }
 
   async fetchExtraChannels(cx, posts) {
@@ -1244,17 +1153,9 @@ export default class Mattermost extends View {
     if (peers.length) await this.fetchUsers(cx, peers);
   }
 
-  // Unsaving takes a post off the list. A newly saved one isn't in it yet, so that asks the server again.
-  savedChanged(cx, added) {
-    const r = this.results.saved;
-    if (!r?.posts) return;
-    r.posts = r.posts.filter((p) => this.saved.has(p.id));
-    if (added && this.rhs === "saved") this.loadResults("saved", cx);
-  }
-
   // A post that's anywhere the panel keeps one: a post can be in a channel, a thread and a list at once.
   copiesOf(id) {
-    const lists = [...this.posts.values(), ...this.threadPosts.values(), ...Object.values(this.results).map((r) => r.posts)];
+    const lists = [...this.posts.values(), ...this.threadPosts.values()];
     return lists.map((list) => list?.find((p) => p.id === id)).filter(Boolean);
   }
 
@@ -1386,25 +1287,8 @@ export default class Mattermost extends View {
     if (resetStatus) openOverlay({ mod: "mattermost", kind: "dialog", width: RESET_W, height: resetHeight(resetStatus), props: { demo: this.cfg?.demo, resetStatus } });
   }
 
-  openProfile() {
-    openProfileDialog({ demo: this.cfg?.demo, profile: { user: this.me, config: this.clientConfig, avatar: this.media.avatar(this.users.get(this.me.id)) } });
-  }
-
-  accountMenu(box) {
-    const u = this.users.get(this.me.id);
-    const custom = this.customEnabled() ? liveStatus(u?.custom) : null;
-    // Right-aligned to the button unless that crosses the panel's edge, which it does in a sidebar narrower than the menu.
-    const x = Math.max((this.box?.x ?? box.x) + 4, box.x + box.width - ACCOUNT_W * this.zoom());
-    this.openMenu({
-      kind: "account",
-      user: { name: `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim(), username: u?.username ?? "", avatar: this.media.avatar(u) },
-      status: this.statuses.get(this.me.id) ?? "offline",
-      dndEnd: this.dndEnd,
-      customEnabled: this.customEnabled(),
-      askFirst: this.autoResetPref === "" && this.statuses.get(this.me.id) === "ooo",
-      custom: custom && { text: custom.text, until: until(custom), glyph: custom.emoji ? this.emojiImage(custom.emoji) : null },
-      isDemo: Boolean(this.cfg?.demo),
-    }, { ...box, x });
+  openProfile(tab = null) {
+    openProfileDialog({ demo: this.cfg?.demo, profile: { user: this.me, config: this.clientConfig, avatar: this.media.avatar(this.users.get(this.me.id)), ...(tab ? { tab } : {}) } });
   }
 
   customEnabled() {
@@ -1430,9 +1314,9 @@ export default class Mattermost extends View {
     Object.assign(this, {
       autoResetPref: "",
       me: null, team: null, teams: null, clientConfig: null, selected: null, thread: null, rhs: null, rhsFrom: null, rhsThread: null, rows: null, error: null,
-      rhsExpanded: false, rhsLast: null, mentionFilters: NO_FILTERS, mentionTeam: null, filterable: new Map(),
-      opening: null, editing: null, detached: null, highlighted: null, live: false, wsError: null, mentionKeys: [], recentStatuses: [], dndEnd: 0,
-      categories: [], threads: { all: null, unread: null }, threadTotals: { total_unread_threads: 0, total_unread_mentions: 0 }, results: {}, draftsTouched: false,
+      rhsExpanded: false, rhsLast: null, section: "chats", thread: null, draftSel: null, previews: new Map(), wantedPreviews: new Set(),
+      opening: null, editing: null, detached: null, highlighted: null, live: false, wsError: null, recentStatuses: [], dndEnd: 0,
+      categories: [], threads: { all: null, unread: null }, threadTotals: { total_unread_threads: 0, total_unread_mentions: 0 }, draftsTouched: false,
       channels: new Map(), members: new Map(), users: new Map(), byUsername: new Map(), posts: new Map(), threadPosts: new Map(), statuses: new Map(), gmMembers: new Map(),
       following: new Map(), drafts: new Map(), stats: new Map(), extraChannels: new Map(), saved: new Set(), authors: new Set(), directory: new Directory(this),
       rhsData: { members: new Map(), pinned: new Map(), files: new Map() },
@@ -1538,14 +1422,13 @@ export default class Mattermost extends View {
   }
 
   openThreads(cx) {
-    this.select(THREADS);
-    this.redraw(cx);
-    cx.spawn(async (cx) => this.loadThreads(cx));
+    this.showSection(THREADS, cx);
   }
 
   async openThread(id, cx) {
+    if (this.section !== THREADS) this.showSection(THREADS, cx);
     this.thread = id;
-    this.resetScroll();
+    this.threadScroll = scrollState();
     this.redraw(cx);
     await this.working(() => this.fetchThread(id, cx));
     this.loadFollowing(cx, this.threadPosts.get(id)?.slice(0, 1) ?? []);
@@ -1554,14 +1437,7 @@ export default class Mattermost extends View {
   }
 
   openDrafts(cx) {
-    this.opening = null;
-    this.draftAsk = null;
-    this.select(DRAFTS);
-    this.redraw(cx);
-    cx.spawn(async (cx) => {
-      await this.ingestDrafts(cx);
-      this.redraw(cx);
-    });
+    this.showSection(DRAFTS, cx);
   }
 
   // Mentions and custom emoji in a draft need the same lookups as a post's.
@@ -1598,7 +1474,13 @@ export default class Mattermost extends View {
   // Every view change comes through redraw, so this is the one place a box's text follows what it shows.
   bindDrafts(cx) {
     const kind = this.mainKind();
-    const keys = [kind === "chat" ? this.selected : null, this.rhs === "thread" && (kind === "chat" || this.rhsGlobal() || this.solo) ? this.rhsThread : null, this.thread];
+    // The Drafts reader edits a draft in the box its conversation would.
+    const d = kind === "drafts" ? this.selectedDraft() : null;
+    const keys = [
+      kind === "chat" ? this.selected : d && !d.root_id ? d.channel_id : null,
+      this.rhs === "thread" && (kind === "chat" || this.solo) ? this.rhsThread : null,
+      kind === "thread" ? this.thread : d?.root_id || null,
+    ];
     this.boxes.forEach((box, i) => {
       if (box.key === keys[i]) return;
       this.leaveDraft(box, cx);
@@ -1614,8 +1496,6 @@ export default class Mattermost extends View {
     box.suggest.reset();
     box.key = key;
     box.empty = !box.now.trim();
-    box.preview = false;
-    box.long = false;
   }
 
   leaveDraft(box, cx) {
@@ -1637,13 +1517,9 @@ export default class Mattermost extends View {
     box.shown = value;
     if ((old?.message ?? "") === message) return;
     const next = { ...old, channel_id, root_id: box.thread ? box.key : "", message, dirty: true, update_at: Date.now() };
-    if (!old && this.pendingPriority.has(box.key)) next.priority = this.pendingPriority.get(box.key);
-    this.pendingPriority.delete(box.key);
     next.typing = !draftEmpty(next) && (!old || draftEmpty(old) || Boolean(old.typing));
-    if (draftEmpty(next) && !old?.remote) {
-      this.drafts.delete(box.key);
-      if (hasPriority(old?.priority)) this.pendingPriority.set(box.key, old.priority);
-    } else this.drafts.set(box.key, next);
+    if (draftEmpty(next) && !old?.remote) this.drafts.delete(box.key);
+    else this.drafts.set(box.key, next);
     this.draftsTouched = true;
   }
 
@@ -1713,7 +1589,6 @@ export default class Mattermost extends View {
 
   clearDraft(key, cx, keepFiles = false) {
     const d = this.drafts.get(key);
-    this.pendingPriority.delete(key);
     if (d?.remote || (keepFiles && d?.file_ids?.length)) {
       this.drafts.set(key, { ...d, message: "", file_ids: keepFiles ? d.file_ids : [], priority: undefined, typing: false, dirty: true, update_at: Date.now() });
       this.pushDraft(key, cx);
@@ -1910,7 +1785,10 @@ export default class Mattermost extends View {
       ? mentioned || (ids("followers").includes(this.me.id) && this.me.notify_props?.desktop_threads === "all")
       : mentioned || level === "all";
     if (!wanted) return;
-    const looking = reply ? this.thread === post.root_id || (this.rhs === "thread" && this.rhsThread === post.root_id) : this.selected === c.id;
+    const reading = this.mainKind() === "chat";
+    const looking = reply
+      ? (this.mainKind() === "thread" && this.thread === post.root_id) || (reading && this.rhs === "thread" && this.rhsThread === post.root_id)
+      : reading && this.selected === c.id;
     if (looking && appWindow().active) return;
     const author = this.authorName(post);
     const text = notificationText(post.message) || (postFileIds(post).length ? "sent an attachment" : "");
@@ -1966,9 +1844,8 @@ export default class Mattermost extends View {
 
   // Reply opens the thread beside the channel, as Mattermost's right-hand side does.
   openReply(id, cx, aim = null) {
-    // From a list of results, the back button returns to it.
-    const listed = (kind) => RESULTS.has(kind) || kind === "pinned";
-    this.rhsFrom = listed(this.rhs) ? this.rhs : this.rhs === "thread" && listed(this.rhsFrom) ? this.rhsFrom : null;
+    // From the pinned messages, the back button returns to them.
+    this.rhsFrom = this.rhs === "pinned" ? "pinned" : this.rhs === "thread" && this.rhsFrom === "pinned" ? "pinned" : null;
     this.rhs = "thread";
     this.rhsThread = id;
     this.rhsScroll.offset = 0;
@@ -1986,14 +1863,16 @@ export default class Mattermost extends View {
   async onRequest(req, cx) {
     if (this.solo && (req.action === "open" || req.action === "threads")) return toPanel(req);
     if (req.action === "reply") this.openReply(req.post, cx);
-    else if (req.action === "mention-filters") this.applyMentionFilters(req.filters, req.team, cx);
     else if (req.action === "jump") await this.jump(req.post, cx);
     else if (req.action === "link") await this.goTo(req.url, cx);
     else if (req.action === "drafts") takeDrafts(this, req.changes, cx);
     else if (req.action === "threads") this.openThreads(cx);
     else if (req.action === "info" && this.rhs !== "info") this.openRhs("info", cx);
     else if (req.action === "edit") this.startEdit(req.post, req.scope, cx);
-    else if (req.action === "priority") this.setPriority(req.key, req.priority, cx);
+    else if (req.action === "agent") {
+      const p = this.findAnyPost(req.post), agent = agentSpec();
+      if (p && agent) this.sendToAgent(p, agent, cx);
+    }
     else if (req.action === "insert-emoji") {
       const box = this.allBoxes().find((b) => b.name === req.box);
       if (box) { insertAtCaret(this, box, req.text); cx.notify(box.part); }
@@ -2109,15 +1988,16 @@ export default class Mattermost extends View {
   }
 
   gutter() {
-    return this.width >= WIDE ? POST_GUTTER : POST_GUTTER_NARROW;
+    return POST_GUTTER;
   }
 
   // The room for an image in a post.
   contentWidth(scope) {
     // Pinned posts aren't in a timeline, so nothing measures them, but their panel has a known width.
-    const room = scope === "c" || scope === "t" ? this.viewW : scope === "r" ? this.rhsScroll.viewW : scope === "m" || scope === "s" ? this.resultsScroll.viewW : this.rhsW;
+    const sc = { c: this, t: this.threadScroll, r: this.rhsScroll, k: this.peekScroll }[scope];
+    const room = sc?.viewW || (scope === "p" ? CONTEXT_W[this.mode()] ?? CONTEXT_W.m : 480);
     const g = this.gutter();
-    return Math.max(120, (room || 480) - g.col - g.pad - g.right);
+    return Math.max(120, Math.min(room, CONVERSATION_W) - g.col - g.pad - g.right);
   }
 
   // Mattermost edits in place, in the one spot it was asked from: the message becomes its editor until saved
@@ -2126,14 +2006,14 @@ export default class Mattermost extends View {
   startEdit(id, scope, cx) {
     const p = this.findAnyPost(id);
     if (!p) return;
-    const box = this.editBox, rhs = Boolean(scope) && scope !== "c" && scope !== "t";
+    const box = this.editBox;
     const text = p.message ?? "";
     this.editing = id;
     this.editScope = scope ?? null;
     for (const f of p.metadata?.files ?? []) this.fileInfos.set(f.id, f);
     Object.assign(box, {
-      key: `${EDIT_KEY}${id}`, channel: p.channel_id, rhs, where: p.root_id || rhs ? "edit" : "post", spacer: Boolean(p.root_id) || rhs,
-      fileIds: postFileIds(p), preview: false, more: false, long: false, longAt: 0, error: null, saving: false,
+      key: `${EDIT_KEY}${id}`, channel: p.channel_id,
+      fileIds: postFileIds(p), error: null, saving: false,
       before: text, now: text, empty: !text.trim(),
     });
     this.editInput.set_value(text);
@@ -2188,6 +2068,8 @@ export default class Mattermost extends View {
           message, file_ids, edit_at: Date.now(),
           metadata: { ...p.metadata, files: file_ids.map((f) => this.fileInfos.get(f)).filter(Boolean) },
         });
+        const shown = this.previews.get(p.channel_id);
+        if (shown?.id === p.id) this.previews.set(p.channel_id, { ...shown, ...previewOf(p), at: shown.at });
         if (this.editing === id) this.cancelEdit(cx);
         else this.redraw(cx);
       } catch (e) {
@@ -2209,8 +2091,6 @@ export default class Mattermost extends View {
     box.keepFiles = !mayEditFiles;
     box.files = box.fileIds.length;
     box.uploading = Boolean(this.uploads.get(box.key)?.length);
-    box.extraControls = [];
-    box.labels = null;
     const button = (id, label, primary, onClick) => div().id(id).h(32).px(16).flex().flex_none().items_center().rounded(4).cursor_pointer()
       .text_size(12).font_semibold()
       .bg(primary ? t.accent : alpha(t.accent, 0.08)).text_color(primary ? t.accent_foreground : t.accent)
@@ -2238,34 +2118,30 @@ export default class Mattermost extends View {
   // Parsing a message is the costliest part of drawing it, and a render past Herdr's 50 ms is cut off,
   // so the messages about to be drawn are parsed before a redraw is asked for rather than during it.
   warm() {
-    const posts = this.shownPosts() ?? [];
-    for (const p of this.thread ? posts : posts.slice(-this.shown)) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0, this.keys.forPost(p));
-    for (const p of (this.rhsThread && this.threadPosts.get(this.rhsThread)) ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0, this.keys.forPost(p));
-    if (this.selected === DRAFTS) for (const d of this.filedDrafts()) this.parsed(`draft-${draftKey(d)}`, d.message);
-    for (const p of (RESULTS.has(this.rhs) && this.results[this.rhs]?.posts) || []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0, this.keys.forPost(p));
+    const warmAll = (posts) => { for (const p of posts ?? []) if (!isSystem(p)) this.parsed(p.id, p.message ?? "", p.edit_at > 0, this.keys.forPost(p)); };
+    warmAll((this.shownPosts() ?? []).slice(-this.shown));
+    if (this.thread) warmAll(this.threadPosts.get(this.thread));
+    if (this.rhsThread) warmAll(this.threadPosts.get(this.rhsThread));
+    if (this.peekId) warmAll(this.posts.get(this.peekId)?.slice(-WINDOW));
   }
 
   shownPosts() {
-    return this.thread ? this.threadPosts.get(this.thread) : this.posts.get(this.selected);
+    return this.posts.get(this.selected);
   }
 
   // A channel is bottom-anchored, because GPUI's scroll areas start at the top and the newest
   // post belongs at the bottom; a thread reads from its first message down.
   // `sc` is the scroll state: the panel's own fields for the messages, rhsScroll for a thread beside them.
-  scrollBy(dy, cx, sc = this, top = Boolean(this.thread)) {
+  scrollBy(dy, cx, sc = this, top = false) {
     const posts = this.shownPosts() ?? [];
     const max = Math.max(0, sc.contentH - sc.viewH);
     sc.offset = Math.min(max, Math.max(0, sc.offset + (top ? -dy : dy)));
     sc.aim = null;
     if (sc === this && this.offset >= max - 200) {
       if (this.shown < posts.length) this.shown += WINDOW;
-      else if (dy > 0 && !this.thread) this.loadOlder(cx);
+      else if (dy > 0) this.loadOlder(cx);
     }
-    if (sc === this && dy < 0 && !this.thread && this.offset <= 200) this.loadNewer(cx);
-    if (sc === this.resultsScroll && sc.offset >= max - 300) {
-      const r = this.results[this.rhs];
-      if (r?.posts && !r.done) this.loadResults(this.rhs, cx, r.page + 1);
-    }
+    if (sc === this && dy < 0 && this.offset <= 200) this.loadNewer(cx);
     // Only the messages move; the wheel handler's cx is the messages part's own.
     cx.notify();
   }
@@ -2351,6 +2227,7 @@ export default class Mattermost extends View {
               if (!this.live && (delay > 2000 || !this.team)) await this.load(cx);
               this.live = true;
               this.wsError = null;
+              this.bannerHidden = false;
               this.publishHeader();
               delay = 2000;
             }
@@ -2390,6 +2267,7 @@ export default class Mattermost extends View {
         await this.ingest(cx, [post]);
         if (root) {
           if (this.detached !== c.id) this.posts.get(c.id)?.push(post);
+          if (!this.hiddenPost(post)) this.previews.set(c.id, { ...previewOf(post), stale: lastPost(c) });
         } else {
           const parent = this.posts.get(c.id)?.find((p) => p.id === post.root_id);
           if (parent) parent.reply_count = (parent.reply_count ?? 0) + 1;
@@ -2424,10 +2302,8 @@ export default class Mattermost extends View {
           const i = posts?.findIndex((p) => p.id === post.id) ?? -1;
           if (i >= 0) posts[i] = { ...posts[i], ...post };
         }
-        for (const r of Object.values(this.results)) {
-          const i = r.posts?.findIndex((p) => p.id === post.id) ?? -1;
-          if (i >= 0) r.posts[i] = { ...r.posts[i], ...post };
-        }
+        const shown = this.previews.get(post.channel_id);
+        if (shown?.id === post.id) this.previews.set(post.channel_id, { ...shown, ...previewOf(post) });
         return true;
       }
       case "post_deleted": {
@@ -2437,7 +2313,10 @@ export default class Mattermost extends View {
         if (posts) this.posts.set(post.channel_id, posts.filter((p) => p.id !== post.id));
         const thread = this.threadPosts.get(post.root_id);
         if (thread) this.threadPosts.set(post.root_id, thread.filter((p) => p.id !== post.id));
-        for (const r of Object.values(this.results)) if (r.posts) r.posts = r.posts.filter((p) => p.id !== post.id);
+        if (this.previews.get(post.channel_id)?.id === post.id) {
+          this.previews.delete(post.channel_id);
+          this.wantedPreviews.add(post.channel_id);
+        }
         return true;
       }
       case "reaction_added":
@@ -2466,7 +2345,7 @@ export default class Mattermost extends View {
       case "thread_follow_changed":
         // Only a follow change says whether you follow; the others carry no state.
         if (ev.event === "thread_follow_changed") this.following.set(data.thread_id, Boolean(data.state));
-        if (this.selected === THREADS && !this.thread) await this.loadThreads(cx);
+        if (this.section === THREADS) await this.loadThreads(cx);
         else await this.loadThreadTotals(cx);
         return true;
       case "draft_created":
@@ -2517,7 +2396,6 @@ export default class Mattermost extends View {
           if (ev.event === "preferences_changed" && x.value === "true") this.saved.add(x.name);
           else this.saved.delete(x.name);
         }
-        if (flagged.length) this.savedChanged(cx, ev.event === "preferences_changed" && flagged.some((x) => x.value === "true"));
         if (flagged.length < prefs.length) await this.loadSidebar(cx);
         return true;
       }
@@ -2529,64 +2407,10 @@ export default class Mattermost extends View {
     return false;
   }
 
-  toggle(cat, cx) {
-    cat.collapsed = !cat.collapsed;
-    this.rows = null;
-    this.redraw(cx);
-    // Saved to the server, as the official app does, so both stay in step.
-    cx.spawn(async (cx) => {
-      try {
-        await this.api(cx, `/users/${this.me.id}/teams/${this.team.id}/channels/categories/${cat.id}`, { method: "PUT", body: cat });
-      } catch (e) {
-        this.error = String(e?.message ?? e);
-        this.redraw(cx);
-      }
-    });
-  }
-
-  sidebarRows() {
-    if (this.rows) return this.rows;
-    this.unreadMemo = new Map();
-    const rows = [];
-    for (const { cat, chans } of this.sidebar()) {
-      rows.push({ key: `cat:${cat.id}`, cat, first: !rows.length });
-      chans.forEach((c) => rows.push({ key: `ch:${c.id}`, c, catMuted: cat.muted, grouped: true }));
-    }
-    return (this.rows = rows);
-  }
-
   // An overlay's `at` and the pointer's bounds are window pixels, but its width and height grow with the
   // app's zoom, so placement works with the zoomed size.
   zoom() {
     return Number(settings()?.zoom) || 1;
-  }
-
-  // Your conversations for Find Channels, as Mattermost's switcher lists them (switch_channel_provider.tsx):
-  // up to 5 unread unmuted ones (Threads first when it has unread threads), then the 20 most recently
-  // viewed; the channel you're in is left out. Search ranks all of them, so all of them go along.
-  openSwitcher() {
-    const items = [...this.channels.values()].filter((c) => c.id !== this.selected).map((c) => {
-      const viewed = Math.max(this.members.get(c.id)?.last_viewed_at ?? 0, this.viewTimes?.get(c.id) ?? 0);
-      if (c.type === "D") {
-        const peer = this.dmPeer(c), u = this.users.get(peer);
-        const custom = liveStatus(u?.custom);
-        const emoji = custom?.emoji ? this.emojiImage(custom.emoji) : null;
-        const name = this.channelName(c) + (u?.nickname ? ` (${u.nickname})` : "");
-        return { kind: "channel", id: c.id, type: "D", peer, display: name, name: u?.username ?? "", sub: u ? `@${u.username}` : "", viewed,
-          avatar: this.media.avatar(u), status: u?.is_bot ? null : this.statuses.get(peer) ?? "offline", bot: Boolean(u?.is_bot), emoji };
-      }
-      const count = c.type === "G" ? this.gmMembers.get(c.id)?.filter((id) => id !== this.me?.id).length : null;
-      return { kind: "channel", id: c.id, type: c.type, display: this.channelName(c), name: c.type === "G" ? "" : c.name, sub: c.type === "G" ? "" : `~${c.name}`, viewed, count,
-        unread: !this.muted(c) && this.unread(c).count > 0, last: lastPost(c) };
-    });
-    const unread = items.filter((it) => it.unread).sort((a, b) => b.last - a.last).slice(0, 5);
-    if (this.threadTotals.total_unread_threads > 0) unread.unshift({ kind: "threads", id: THREADS, type: "threads", display: "Threads", name: "", sub: "", viewed: Date.now() });
-    const shown = new Set(unread.map((it) => it.id));
-    const recent = items.filter((it) => !shown.has(it.id)).sort(byRecency).slice(0, 20);
-    openOverlay({
-      mod: "mattermost", kind: "dialog", width: SWITCHER_W, height: SWITCHER_H,
-      props: { demo: this.cfg?.demo, switcher: { items, unread: unread.slice(0, 5), recent, me: this.me.id, team: { id: this.team.id, name: this.team.name } } },
-    });
   }
 
   // Where a popup `height` window pixels tall goes next to an anchor: `prefer` side first, then the other, else as low
@@ -2692,7 +2516,6 @@ export default class Mattermost extends View {
       try {
         if (saved) await this.api(cx, `/users/${this.me.id}/preferences/delete`, { method: "POST", body: pref });
         else await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: pref });
-        this.savedChanged(cx, !saved);
         this.redraw(cx);
       } catch (e) {
         if (saved) this.saved.add(p.id);
@@ -2711,6 +2534,7 @@ export default class Mattermost extends View {
       following: this.following.get(p.root_id || p.id),
       link: this.postLink(p.id, this.channelOf(p.channel_id)?.team_id || this.team.id),
       own: p.user_id === this.me.id,
+      agent: agentSpec()?.label ?? null,
     }, box);
   }
 
@@ -2749,8 +2573,9 @@ export default class Mattermost extends View {
         .child(svg("mods/mattermost/icons/dots.svg").size(14)));
   }
 
-  // The frame holds both parts at all times: an event in a part can notify the parts but not the frame,
-  // so which of them shows is decided inside them.
+  // The frame lays out the columns, which depend on the width; the list and the reader are retained parts, so an
+  // event in one of them redraws it without the other. Herdr re-renders this root on every live-data change, so
+  // what it draws itself (the rail) stays small.
   render(cx) {
     if (this.popup) return this.popup.render(cx);
     const t = theme();
@@ -2765,11 +2590,6 @@ export default class Mattermost extends View {
       this.deleteAsk = null;
       cx.timer.after(0, () => { if (this.editing) this.editInput.focus(); });
     }
-    if (this.filtersOpen && shared("mattermost.popup") !== this.filtersOpen) {
-      this.filtersOpen = null;
-      this.filtersClosed = Date.now();
-      cx.timer.after(0, (cx) => cx.notify(this.mainPart));
-    }
     return h_flex().id("root").size_full().font_family(FONT).text_color(t.foreground).text_size(13)
       // The panel's place in the window, for placing popups; stored only, so moving the pointer redraws nothing.
       .on_mouse_move((e, cx) => {
@@ -2783,10 +2603,6 @@ export default class Mattermost extends View {
         if (this.jira?.onKey(e, cx)) return;
         if (isExpandKey(e.keystroke)) rhsExpandKey(this, cx);
       }))
-      // A press anywhere else closes a formatting bar's row of hidden controls, as a press outside a menu does.
-      .on_mouse_down("left", (_e, cx) => {
-        for (const box of this.boxes) if (box.more) { box.more = false; cx.notify(box.part); }
-      })
       .when(this.frame, (el) => el.rounded(10).overflow_hidden().bg(t.background).border_1()
         .border_color(this.typing ? t.accent : t.border).track_focus(this.focus).focus((s) => s.border_color(t.accent))
         // A press that reaches the frame focuses the panel, as a pane takes the keyboard when clicked;
@@ -2797,72 +2613,135 @@ export default class Mattermost extends View {
           if (!this.typing) this.focus.focus();
           cx.stop_propagation();
         }))
+      // A layout block paints its own rounded background, and nothing here can clip to its corners.
+      .when(!this.frame && this.solo, (el) => el.bg(t.background))
       .on_size_change((size, cx) => {
-        const was = this.width >= WIDE;
         this.width = size.width;
         this.height = size.height;
-        this.fitBoxRows(size.height / this.zoom());
-        if (was !== this.width >= WIDE) this.redraw(cx);
+        const shape = this.shape();
+        if (shape !== this.layoutShape) {
+          this.layoutShape = shape;
+          this.redraw(cx);
+        }
       })
       .when(Boolean(this.setup), (el) => el.child(this.setupView(t)))
-      .when(!this.setup && this.solo, (el) => el.bg(t.background).child(this.mainPart))
-      .when(!this.setup && !this.solo && this.width >= WIDE, (el) => el.child(h_resizable("mm-sidebar").size_full()
-        // The window keeps a dragged width only while it runs; the last one is stored so it survives a restart.
-        .on_resize((sizes, cx) => {
-          this.sideW = Math.round(sizes[0]);
-          localStorage.setItem("sideW", String(this.sideW));
-          this.redraw(cx);
-        })
-        .child(resizable_panel().size(this.sideW).size_range(SIDE_MIN, SIDE_MAX).child(this.sidePart))
-        .child(resizable_panel().child(this.mainPart))))
-      .when(!this.setup && !this.solo && this.width < WIDE, (el) => el.child(this.sidePart).child(this.mainPart));
+      .when(!this.setup && this.solo, (el) => el.child(this.mainPart))
+      .when(!this.setup && !this.solo, (el) => el.child(this.columns(t)));
+  }
+
+  // Widths here are layout units, the mock's pixels; sizes arrive in window pixels.
+  units() {
+    return (this.width || 1000) / this.zoom();
+  }
+
+  mode() {
+    return modeOf(this.units());
+  }
+
+  // What decides the columns, so a resize that changes none of it redraws nothing.
+  shape() {
+    const w = this.units(), mode = modeOf(w);
+    return `${mode}:${listWidth(mode, w)}:${contextBeside(mode, w)}:${Math.round((this.height || 0) / this.zoom() / 50)}`;
+  }
+
+  sections() {
+    return SECTIONS.filter(([key]) => key !== "jira" || this.jira);
+  }
+
+  // A section's count on its tab: mentions and unread threads in red, which want you; Jira's Direct and drafts in blue.
+  sectionBadge(key) {
+    if (key === "chats") {
+      let mentions = 0;
+      for (const c of this.channels.values()) mentions += this.unread(c).mentions ?? 0;
+      return { count: mentions, red: true };
+    }
+    if (key === "threads") return { count: this.threadTotals.total_unread_threads ?? 0, red: true };
+    if (key === "jira") return { count: this.jira?.counts().direct ?? 0, red: false };
+    if (key === "drafts") return { count: this.filedDrafts().length, red: false };
+    return { count: 0, red: false };
+  }
+
+  showSection(key, cx) {
+    if (key === "jira" && !this.jira) return;
+    if (key !== this.section) this.rhsExpanded = false;
+    this.section = key;
+    this.opening = null;
+    localStorage.setItem("section", key);
+    if (key === "threads") cx.spawn(async (cx) => this.loadThreads(cx));
+    if (key === "drafts") {
+      this.draftAsk = null;
+      if (!this.selectedDraft()) this.draftSel = this.filedDrafts()[0] ? draftKey(this.filedDrafts()[0]) : null;
+      cx.spawn(async (cx) => { await this.ingestDrafts(cx); this.redraw(cx); });
+    }
+    if (key === "jira") this.jira.open(cx);
+    if (key === "find") this.find.focus();
+    if (key === "chats" && this.selected) this.input.focus();
+    this.redraw(cx);
+  }
+
+  columns(t) {
+    const mode = this.mode(), w = this.units();
+    const banner = !this.live && this.wsError && !this.bannerHidden
+      ? [h_flex().h(26).flex_none().px(11).gap(8).items_center().bg(alpha(AMBER, 0.14)).text_size(12).text_color(AMBER)
+        .child(svg("mods/mattermost/icons/info.svg").size(13).flex_none())
+        .child(div().flex_1().min_w(0).truncate().child("Reconnecting. What you see may be out of date."))
+        .child(div().id("banner-hide").flex_none().font_semibold().cursor_pointer().hover((s) => s.underline())
+          .on_click((_e, cx) => { this.bannerHidden = true; cx.notify(); }).child("Dismiss"))]
+      : [];
+    if (mode === "n") {
+      const z = this.zoom(), h = (this.height || 900) / z;
+      const most = Math.max(110, h - 300);
+      return v_flex().size_full().children(banner)
+        .child(v_resizable("mm-stack").flex_1().min_h(0).w_full()
+          .child(resizable_panel().size(Math.min(460, most) * z).size_range(110 * z, most * z).child(this.sidePart))
+          .child(resizable_panel().child(this.mainPart)));
+    }
+    return v_flex().size_full().children(banner)
+      .child(h_flex().flex_1().min_h(0).w_full()
+        .when(mode === "f", (el) => el.child(rail(this, t)))
+        .child(div().w(listWidth(mode, w)).flex_none().h_full().border_r_1().border_color(t.border).child(this.sidePart))
+        .child(div().flex_1().min_w(0).h_full().child(this.mainPart)));
   }
 
   setupView(t) {
     const s = this.setup;
     const link = (id, label, url) => h_flex().child(div().id(id).cursor_pointer().text_color(t.accent).hover((st) => st.underline())
       .on_click(() => exec("xdg-open", [url])).child(label));
-    const field = (id, label, input, ...hint) => v_flex().gap(6)
-      .child(div().text_size(12).font_semibold().child(label))
+    const field = (id, label, input, ...hint) => v_flex().gap(4)
+      .child(div().text_size(12).text_color(t.muted).child(label))
       .child(div().id(id).on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); input.focus(); })
-        .child(Input.new(input).h(34).px(10).rounded(8).border_1().border_color(t.input).bg(t.background).text_size(13)))
+        .child(Input.new(input).h(34).px(10).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(13)))
       .child(v_flex().gap(2).text_size(12).text_color(t.muted).children(hint));
-    const button = (id, label, primary, onClick) => div().id(id).h(34).px(16).flex().flex_none().items_center().justify_center().rounded(4)
-      .cursor_pointer().text_size(13).font_semibold()
-      .bg(primary ? t.accent : alpha(t.accent, 0.08)).text_color(primary ? t.accent_foreground : t.accent)
-      .hover((st) => st.bg(primary ? t.accent : alpha(t.accent, 0.12)))
-      .on_click(onClick).child(label);
     const form = s.step === "team"
       ? v_flex().gap(8)
-        .child(div().text_color(t.muted).child(`Your account is in ${s.teams.length} teams. Which one should the panel show?`))
+        .child(div().text_size(12).text_color(t.muted).child(`Your account is in ${s.teams.length} teams. Which one should the panel show?`))
         .children(s.teams.map((team) => h_flex().id(`team-${team.id}`).h(36).px(12).gap(8).items_center().rounded(6).cursor_pointer()
           .border_1().border_color(t.border).hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => cx.spawn(async (cx) => this.saveLogin({ url: s.url, token: s.token, team }, cx)))
           .child(div().flex_1().truncate().child(team.display_name)).child(div().text_color(t.dim).child(team.name))))
-        .child(h_flex().pt(4).child(button("setup-back", "Back", false, (_e, cx) => { this.setup = { step: "login" }; cx.notify(); })))
-      : v_flex().gap(16)
+        .child(h_flex().pt(4).child(button("setup-back", t, "Back", (_e, cx) => { this.setup = { step: "login" }; cx.notify(); })))
+      : v_flex().gap(13)
         .child(field("setup-url", "Server URL", this.urlInput, "The address you open Mattermost at in a browser."))
         .child(field("setup-token", "Personal access token", this.tokenInput,
           "In Mattermost: Profile → Security → Personal Access Tokens → Create Token.", link("setup-docs", "How to create one", TOKEN_DOCS)))
-        .child(div().text_size(12).text_color(t.dim).child("No Personal Access Tokens section? An admin has to turn them on in System Console → Integrations → Integration Management and allow your account to create them."))
-        .child(v_flex().gap(8).items_start()
-          .child(button("setup-connect", s.busy ? "Connecting…" : "Connect", true, (_e, cx) => cx.spawn(async (cx) => this.connectLogin(cx))))
-          .child(div().text_size(12).text_color(t.dim).child(`Saved to ${loginPath().replace(home(), "~")}, readable only by you.`)));
-    return v_flex().id("setup").size_full().overflow_y_scrollbar().items_center().p(24)
-      .child(v_flex().w_full().max_w(420).my_auto().gap(20)
+        .child(h_flex().pt(2).child(button("setup-connect", t, s.busy ? "Connecting…" : "Connect", (_e, cx) => cx.spawn(async (cx) => this.connectLogin(cx)), { primary: true })))
+        .child(div().text_size(12).text_color(t.muted).child("No Personal Access Tokens section? An admin has to turn them on in System Console → Integrations → Integration Management and allow your account to create them."))
+        .child(div().text_size(12).text_color(t.dim).child(`Saved to ${loginPath().replace(home(), "~")}, readable only by you.`));
+    return v_flex().id("setup").size_full().overflow_y_scrollbar().items_center().p(20)
+      .child(v_flex().w_full().max_w(380).my_auto().gap(16)
         .child(h_flex().gap(10).items_center()
-          .child(image("mods/mattermost/icons/logo.svg").size(28))
-          .child(div().text_size(18).font_semibold().child("Connect to Mattermost")))
+          .child(image("mods/mattermost/icons/logo.svg").size(24))
+          .child(div().text_size(18).line_height("24px").font_semibold().child("Connect to Mattermost")))
         .child(form)
         .when(Boolean(s.error), (el) => el.child(div().text_size(12).text_color(t.blocked).child(s.error))));
   }
 
   mainKind() {
     if (this.solo) return null;
-    if (this.thread) return "thread";
-    if (this.selected === THREADS) return "threads";
-    if (this.selected === DRAFTS) return "drafts";
-    if (this.selected === JIRA && this.jira) return "jira";
+    if (this.section === "threads") return this.thread ? "thread" : "threads";
+    if (this.section === "drafts") return "drafts";
+    if (this.section === "jira") return this.jira ? "jira" : null;
+    if (this.section === "me") return "me";
     return this.selected && this.channels.has(this.selected) ? "chat" : null;
   }
 
@@ -2896,141 +2775,296 @@ export default class Mattermost extends View {
 
   buildPart(part) {
     const t = theme();
-    const wide = this.width >= WIDE;
-    const kind = this.mainKind();
-    if (this.solo) return this.rhs ? this.rhsView(t, this.channels.get(this.selected), true) : div();
-    if (part === "side") return wide || (!kind && !this.rhsGlobal()) ? this.channelList(t, wide) : div();
-    if (kind === "chat") return this.chat(t, wide);
-    const page = this.page(kind, t, wide);
-    return this.rhsGlobal() ? this.withRhs(page, t, null) : page;
-  }
-
-  page(kind, t, wide) {
-    if (kind === "thread") {
-      // Mattermost's Threads keeps the list on the left while a thread is open on the right.
-      const room = this.width - (wide ? this.sideW : 0) - (this.rhsGlobal() && this.rhsBeside() ? this.rhsW : 0);
-      if (this.selected === THREADS && room >= THREAD_LIST_W + MESSAGES_MIN) {
-        return h_flex().size_full()
-          .child(v_flex().w(THREAD_LIST_W).flex_none().h_full().border_r(1).border_color(t.border).child(this.threadsView(t, wide)))
-          .child(this.threadView(t, wide, false));
-      }
-      return this.threadView(t, wide, true);
+    if (this.solo) return v_flex().size_full().bg(t.background).child(this.rhs ? this.rhsView(t, this.channels.get(this.selected), true) : div());
+    const mode = this.mode();
+    if (part === "side") {
+      // In medium the list ends at the panel's bottom corner, where a square row highlight would show past the rounding.
+      return v_flex().size_full().when(mode === "m", (el) => el.pb(10))
+        .when(mode !== "f", (el) => el.child(sectionTabs(this, t, mode)))
+        .child(this.sectionList(t, mode));
     }
-    if (kind === "threads") return this.threadsView(t, wide);
-    if (kind === "drafts") return this.draftsView(t, wide);
-    if (kind === "jira") return this.jira.page(t, wide);
-    return !wide ? div() : v_flex().flex_1().h_full().items_center().justify_center().text_color(t.dim)
-      .child(this.error ?? (this.channels.size ? "Pick a channel" : ""));
+    return this.reader(t, mode);
   }
 
-  channelList(t, wide) {
-    const rows = this.sidebarRows();
-    const { total_unread_threads: unreadThreads, total_unread_mentions: threadMentions } = this.threadTotals;
-    const active = !this.opening && this.selected === THREADS;
-    const draftsActive = !this.opening && this.selected === DRAFTS;
-    const draftCount = this.filedDrafts().length;
-    return v_flex().h_full().min_h(0).when(wide, (el) => el.size_full()).when(!wide, (el) => el.flex_1())
-      // Same height as the main side's top bar, so the search box and the tabs share a center line.
-      // A flat bar like the main side's top bar, sharing its height and bottom divider.
-      // Mattermost's Find channel is a button for the Find Channels dialog, not a filter.
-      // The whole bar is the button. GPUI clips children to a rectangle, so in the framed panel the bar
-      // rounds its own corner to the frame's inner curve (10px less the 1px border).
-      .child(h_flex().id("search").h(36).flex_none().pl(ROW_PAD).pr(8).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(this.frame, (el) => el.rounded_tl(9)).cursor_pointer().text_size(12.5).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click(() => this.openSwitcher())
-        .child(this.slot(svg("mods/mattermost/icons/search.svg").size(14)))
-        .child(div().flex_1().child("Find channel")))
-      .child(div().pt(4).pb(2).flex_none().child(h_flex().id("threads").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
-        .when(active, (el) => el.bg(t.selected).child(this.activeBar(t))).hover((s) => s.bg(active ? t.selected : t.hover))
-        .on_click((_e, cx) => this.openThreads(cx))
-        .child(this.slot(svg("mods/mattermost/icons/threads.svg").size(14).text_color(active || unreadThreads ? t.foreground : t.muted)))
-        .child(div().flex_1().text_color(active || unreadThreads ? t.foreground : t.muted).when(unreadThreads > 0, (el) => el.font_semibold()).child("Threads"))
-        .when(threadMentions > 0, (el) => el.child(this.badge(threadMentions, t)))))
-      .when(Boolean(this.jira), (el) => el.child(this.jira.sidebarRow(t)))
-      // Mattermost lists Drafts only while there are some, or while its page is open.
-      .when(draftCount > 0 || this.selected === DRAFTS, (el) => el.child(div().pb(2).flex_none().child(h_flex().id("drafts").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
-        .when(draftsActive, (el) => el.bg(t.selected).child(this.activeBar(t))).hover((s) => s.bg(draftsActive ? t.selected : t.hover))
-        .on_click((_e, cx) => this.openDrafts(cx))
-        .child(this.slot(svg("mods/mattermost/icons/send.svg").size(14).text_color(draftsActive ? t.foreground : t.muted)))
-        .child(div().flex_1().text_color(draftsActive ? t.foreground : t.muted).child("Drafts"))
-        .when(draftCount > 0, (el) => el.child(h_flex().gap(4).items_center().text_size(12).text_color(t.muted)
-          .child(svg("mods/mattermost/icons/pencil.svg").size(12).text_color(t.muted)).child(String(draftCount)))))))
-      .when(Boolean(this.error) && !this.channels.size, (el) => el.child(div().p(12).text_color(t.blocked).child(this.error)))
-      .child(v_flex().id("channels").flex_1().min_h(0).overflow_y_scrollbar().pb(6)
-        .children(rows.map((r) => (r.cat ? this.categoryRow(r, t) : this.channelRow(r.c, t, r.catMuted, r.grouped)))))
-      .when(Boolean(this.me), (el) => el.child(this.sideFooter(t)));
+  sectionList(t, mode) {
+    const titled = (title, list) => v_flex().flex_1().min_h(0).when(mode === "f", (el) => el.child(header(t, title))).child(list);
+    if (this.section === "find") return this.find.render(t);
+    if (this.section === "threads") return this.threadsList(t);
+    if (this.section === "jira" && this.jira) return this.jira.list(t, mode);
+    if (this.section === "drafts") return titled("Drafts", draftsList(this, t));
+    if (this.section === "me") return titled("You", meList(this, t));
+    return this.chatsList(t);
   }
 
-  // Mattermost's global header buttons. The panel has no global header, and this bar stays up on every page,
-  // where the channel header shows only in a channel. Settings isn't built.
-  sideFooter(t) {
-    const u = this.users.get(this.me.id);
-    const custom = this.customEnabled() ? liveStatus(u?.custom) : null;
-    const emoji = Boolean(custom?.emoji);
-    const toggle = (kind, icon, tip) => {
-      const on = this.rhs === kind;
-      return div().id(`ft-${kind}`).size(28).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()
-        .bg(on ? t.accent : t.background).text_color(on ? t.accent_foreground : t.muted)
-        .hover((s) => s.bg(on ? t.accent : t.hover).text_color(on ? t.accent_foreground : t.foreground))
-        .tooltip(tip).on_click((_e, cx) => this.openResults(kind, cx))
-        .child(svg(`mods/mattermost/icons/${icon}.svg`).size(16));
-    };
-    return h_flex().id("side-footer").h(BAR_H).flex_none().pl(3).pr(4).gap(2).items_center().border_t(1).border_color(t.border)
-      .child(toggle("mentions", "at-sign", "Recent mentions"))
-      .child(toggle("saved", "bookmark", "Saved messages"))
-      .child(div().flex_1())
-      .child(h_flex().id("ft-account").h(30).px(6).gap(6).flex_none().items_center().rounded(4).cursor_pointer()
-        .when(emoji, (el) => el.bg(alpha(t.foreground, 0.16)))
-        .hover((s) => s.bg(alpha(t.foreground, emoji ? 0.16 : 0.08)))
-        .on_mouse_down("left", (e) => this.accountMenu(e.bounds ?? { ...e.position, width: 0, height: 0 }))
-        .when(emoji, (el) => el.child(this.statusEmoji("ft-status", custom, 18, t)
-          .on_mouse_down("left", (_e, cx) => {
-            cx.stop_propagation();
-            this.hideStatus();
-            cx.spawn(async (cx) => this.openStatusDialog(cx));
-          })))
-        .child(this.withStatus(this.me.id, this.avatar(this.me.id, 24, t), 24, 14, 10, 13, t)));
+  reader(t, mode) {
+    const kind = this.mainKind();
+    if (kind === "chat") return this.chat(t, mode);
+    let reader, context = null;
+    if (kind === "thread") {
+      reader = this.threadView(t);
+      const root = this.threadPosts.get(this.thread)?.[0];
+      if (mode === "f" && root) context = this.peek(t, root.channel_id);
+    } else if (kind === "threads") {
+      reader = this.threads[this.threadTab]?.length === 0 ? empty(t, "check", "No followed threads", "Replies to threads you follow will show here.") : nothingPicked(t);
+    } else if (kind === "drafts") {
+      reader = draftReader(this, t);
+      const d = this.selectedDraft();
+      if (mode === "f" && d) context = this.peek(t, d.channel_id);
+    } else if (kind === "jira") reader = this.jira.reader(t, mode);
+    else if (kind === "me") reader = meReader(this, t);
+    else if (this.error && !this.channels.size) reader = empty(t, "circle-alert", "Couldn't load", this.error);
+    else reader = this.channels.size ? nothingPicked(t) : div();
+    return h_flex().size_full()
+      .child(v_flex().flex_1().min_w(0).h_full().child(reader))
+      .when(Boolean(context), (el) => el.child(v_flex().w(CONTEXT_W.f).flex_none().h_full().border_l_1().border_color(t.border).child(context)));
   }
 
-  badge(n, t) {
-    return div().px(6).rounded(8).bg(t.accent).text_color(t.accent_foreground).text_size(11).font_semibold().child(String(n));
+  // Chats: the folder strip over the conversations. All Chats is every one, newest first; a folder is a sidebar
+  // category, in its own order.
+  chatsList(t) {
+    const cats = this.sidebar();
+    const unreadIn = (chans) => chans.filter((c) => !this.muted(c) && this.unread(c).count > 0).length;
+    const everyone = [...new Map(cats.flatMap(({ chans }) => chans.map((c) => [c.id, c]))).values()];
+    const tabs = [{ key: "all", label: "All Chats", short: "All", count: unreadIn(everyone) },
+      ...cats.map(({ cat, chans }) => ({
+        key: cat.id, label: cat.display_name, count: unreadIn(chans),
+        menu: (e) => this.openMenu({ kind: "category", cat, unreadIds: chans.filter((c) => this.unread(c).count > 0 || this.unread(c).mentions > 0).map((c) => c.id) },
+          e.bounds ?? { ...e.position, width: 0, height: 0 }),
+      }))];
+    const folder = tabs.some((x) => x.key === this.chatFolder) ? this.chatFolder : "all";
+    const list = folder === "all" ? everyone.sort((a, b) => lastPost(b) - lastPost(a)) : cats.find(({ cat }) => cat.id === folder).chans;
+    const mutedCats = new Set(cats.filter(({ cat }) => cat.muted).flatMap(({ chans }) => chans.map((c) => c.id)));
+    return v_flex().flex_1().min_h(0)
+      .child(strip(this, t, { id: "chats", tabs, current: folder, stretch: true, onPick: (key, cx) => {
+        this.chatFolder = key;
+        localStorage.setItem("folder", key);
+        cx.notify(this.sidePart);
+      } }))
+      .when(Boolean(this.error) && !this.channels.size, (el) => el.child(div().p(12).text_size(12).text_color(t.blocked).child(this.error)))
+      .child(list.length ? scrollList(`chats-${folder}`, list.map((c) => this.chatRow(c, t, mutedCats.has(c.id))))
+        : this.channels.size ? empty(t, "check", "No chats in this folder") : div().flex_1());
   }
 
-  categoryRow({ cat, first }, t) {
-    const unreadIds = cat.channel_ids.filter((id) => { const c = this.channels.get(id); return c && (this.unread(c).count > 0 || this.unread(c).mentions > 0); });
-    // An svg keeps its own color when the row's hover changes the text color, so the hovered
-    // category is tracked to light its chevron with the name.
-    const hovered = this.hoverCat === cat.id;
-    return div().pt(first ? 2 : 10).child(h_flex().id(`cat-${cat.id}`).relative().h(26).pl(ROW_PAD).pr(4).gap(6).items_center().cursor_pointer()
-      .text_size(11).font_semibold().text_color(t.dim).hover((s) => s.text_color(t.foreground))
-      .on_hover((on, cx) => {
-        if (on) this.hoverCat = cat.id;
-        else if (this.hoverCat === cat.id) this.hoverCat = null;
-        else return;
-        cx.notify();
-      })
-      .on_click((_e, cx) => this.toggle(cat, cx))
-      .child(this.slot(svg(`mods/mattermost/icons/chevron-${cat.collapsed ? "right" : "down"}.svg`).size(12).text_color(hovered ? t.foreground : t.dim)))
-      .child(div().flex_1().truncate().child(cat.display_name.toUpperCase()))
-      .child(this.hoverDots(`catm-${cat.id}`, t, () => this.openMenu({ kind: "category", cat, unreadIds }), t.background)));
+  chatRow(c, t, catMuted) {
+    const { count, mentions } = this.unread(c);
+    const sel = this.section === "chats" && c.id === (this.opening ?? this.selected);
+    const menu = () => this.channelMenu(c);
+    return listRow({
+      id: `ch-${c.id}`, icon: this.chatIcon(c, t), title: this.channelName(c), time: shortTime(lastPost(c)), preview: this.channelPreview(c),
+      unread: count > 0, badge: mentions, dot: count > 0, muted: catMuted || this.muted(c), selected: sel,
+      onClick: (_e, cx) => cx.spawn(async (cx) => this.open(c.id, cx)), onMenu: menu,
+      extra: [this.hoverDots(`chm-${c.id}`, t, menu, sel ? t.selected : t.hover)],
+    }, t);
   }
 
-  channelIcon(c, color, t) {
+  chatIcon(c, t) {
     if (c.type === "D") {
       const peer = this.dmPeer(c);
-      // Bots, System among them, have no presence, and Mattermost shows none for them.
-      // Mattermost's DM avatar is 20px with a 13px status ring at (10, 10) (.DirectChannel__status-icon).
-      return this.withStatus(peer, this.avatar(peer, 20, t), 20, 13, 10, 10, t);
+      return this.withStatus(peer, this.avatar(peer, 36, t), 36, 15, 11, 23, t);
     }
-    // A group DM's icon is its member count (without you) on a .status--group square. Open Sans digits
-    // sit low in their line box, so 1px off the bottom centers the glyph rather than the box.
     const others = c.type === "G" ? this.gmMembers.get(c.id)?.filter((id) => id !== this.me?.id) : null;
-    if (others) {
-      return div().size(18).flex_none().flex().items_center().justify_center().pb(1).rounded(2).bg(alpha(t.foreground, 0.16))
-        .text_size(12).line_height("16px").font_semibold().text_color(color).child(String(others.length));
+    if (others) return div().size(36).flex_none().rounded_full().bg(alpha(t.foreground, 0.08)).flex().items_center().justify_center().text_size(13).font_semibold().text_color(t.muted).child(String(others.length));
+    return iconTile(c.type === "P" ? "lock" : c.type === "G" ? "users" : "globe", t);
+  }
+
+  lastActivity(c) {
+    return lastPost(c);
+  }
+
+  // The newest root post as a line of text: what's loaded when the conversation is, else a small fetch for the rows
+  // drawn. A live post replaces it directly.
+  channelPreview(c) {
+    const posts = this.posts.get(c.id);
+    const latest = posts && [...posts].reverse().find((p) => !p.root_id && !this.hiddenPost(p) && !isEphemeral(p));
+    let hit = this.previews.get(c.id);
+    if (latest && latest.create_at >= (hit?.at ?? 0)) hit = previewOf(latest);
+    else if (!hit || hit.stale < lastPost(c)) this.wantedPreviews.add(c.id);
+    if (!hit?.at) return "";
+    const text = this.preview(hit.text ?? "") || (hit.files ? "sent an attachment" : "");
+    if (hit.system) return text;
+    const who = hit.user === this.me?.id ? "You" : c.type === "D" ? null : this.userName(hit.user).split(" ")[0];
+    return who ? `${who}: ${text}` : text;
+  }
+
+  async loadPeek(id, cx) {
+    this.peekLoad = null;
+    try {
+      const page = await this.api(cx, `/channels/${id}/posts?per_page=${PAGE}&collapsedThreads=true`);
+      const fetched = page.order.map((pid) => page.posts[pid]).reverse();
+      await this.ingest(cx, fetched);
+      if (!this.posts.has(id)) remember(this.posts, id, fetched);
+    } catch {}
+    this.peeking = false;
+    this.redraw(cx);
+  }
+
+  async fetchPreviews(cx) {
+    this.fetchingPreviews = true;
+    const ids = [...this.wantedPreviews].slice(0, 4);
+    for (const id of ids) this.wantedPreviews.delete(id);
+    try {
+      await Promise.all(ids.map(async (id) => {
+        const c = this.channels.get(id);
+        if (!c) return;
+        const stale = lastPost(c);
+        try {
+          const page = await this.api(cx, `/channels/${id}/posts?per_page=5&collapsedThreads=true`, { attempts: 1 });
+          const p = page.order.map((pid) => page.posts[pid]).find((x) => !x.root_id && !this.hiddenPost(x));
+          if (p) await this.fetchUsers(cx, [p.user_id]).catch(() => {});
+          this.previews.set(id, p ? { ...previewOf(p), stale } : { at: 0, stale });
+        } catch {
+          this.previews.set(id, { ...(this.previews.get(id) ?? { at: 0 }), stale });
+        }
+      }));
+    } finally {
+      this.fetchingPreviews = false;
     }
-    const name = c.type === "G" ? "users" : c.type === "P" ? "lock" : "globe";
-    return svg(`mods/mattermost/icons/${name}.svg`).size(14).text_color(color);
+    cx.notify(this.sidePart);
+  }
+
+  threadsList(t) {
+    const list = this.threads[this.threadTab];
+    const unreadCount = this.threadTotals.total_unread_threads ?? 0;
+    const right = this.confirmMarkAll
+      ? [div().text_size(12).text_color(t.muted).child("Mark all read?"),
+        button("mark-all-no", t, "Cancel", (_e, cx) => { this.confirmMarkAll = false; this.redraw(cx); }),
+        button("mark-all-yes", t, "Mark read", (_e, cx) => this.markAllRead(cx), { primary: true })]
+      : [barButton("mark-all", t, "mark-read", "Mark all threads as read", (_e, cx) => { this.confirmMarkAll = true; this.redraw(cx); })];
+    const empties = this.threadTab === "unread" ? ["No unread threads", "You're all caught up."] : ["No followed threads", "Threads you start, reply to or follow will show here."];
+    return v_flex().flex_1().min_h(0)
+      .child(strip(this, t, { id: "threads", current: this.threadTab, right,
+        tabs: [{ key: "all", label: "Followed threads" }, { key: "unread", label: "Unreads", count: unreadCount }],
+        onPick: (key, cx) => {
+          this.threadTab = key;
+          this.confirmMarkAll = false;
+          this.redraw(cx);
+          cx.spawn(async (cx) => this.loadThreads(cx));
+        } }))
+      .when(Boolean(this.error), (el) => el.child(div().px(12).py(6).text_size(12).text_color(t.blocked).child(this.error)))
+      .child(!list ? div().flex_1() : !list.length ? empty(t, "check", ...empties) : scrollList(`threads-${this.threadTab}`, list.map((th) => this.threadRow(th, t))));
+  }
+
+  threadRow(th, t) {
+    const p = th.post, c = this.channels.get(p.channel_id);
+    const unread = th.unread_replies > 0;
+    const menu = () => this.openMenu({
+      kind: "thread", saved: this.saved.has(th.id), link: this.postLink(th.id),
+      thread: { id: th.id, channel_id: p.channel_id, unread, following: th.is_following !== false },
+    });
+    const sel = this.thread === th.id;
+    const icon = fromWebhook(p) ? this.postAvatar(p, 36, t) : this.withStatus(p.user_id, this.postAvatar(p, 36, t), 36, 15, 11, 23, t);
+    return listRow({
+      id: `th-${th.id}`, icon, title: c ? this.channelName(c) : this.authorName(p), time: shortTime(th.last_reply_at || p.create_at),
+      preview: `${this.authorName(p).split(" ")[0]}: ${this.preview(p.message || "")}`, unread, badge: th.unread_mentions, dot: unread, selected: sel,
+      onClick: (_e, cx) => cx.spawn(async (cx) => this.openThread(th.id, cx)), onMenu: menu,
+      extra: [this.hoverDots(`thm-${th.id}`, t, menu, sel ? t.selected : t.hover)],
+    }, t);
+  }
+
+  draftKeyOf(d) {
+    return draftKey(d);
+  }
+
+  selectedDraft() {
+    return this.filedDrafts().find((d) => draftKey(d) === this.draftSel) ?? null;
+  }
+
+  selectDraft(key, cx) {
+    this.draftSel = key;
+    this.draftAsk = null;
+    this.redraw(cx);
+  }
+
+  // A conversation shown for context beside what's read in full width: its posts without marking it read, and no box.
+  peek(t, id) {
+    const c = this.channels.get(id);
+    if (!c) return null;
+    const posts = this.posts.get(id);
+    if (this.peekId !== id) {
+      this.peekId = id;
+      this.peekScroll = scrollState();
+    }
+    if (!posts && !this.peeking) {
+      this.peeking = true;
+      this.peekLoad = id;
+    }
+    return v_flex().size_full()
+      .child(header(t, this.channelGlyph(c, t), div().min_w(0).truncate().child(this.channelName(c)), div().flex_1(),
+        barButton("peek-open", t, "external-link", "Open in Chats", (_e, cx) => cx.spawn(async (cx) => this.open(id, cx)))))
+      .child(posts ? this.timeline(`peek-${id}`, this.channelRows(c, posts, t, WINDOW, "k"), t, false, this.peekScroll) : div().flex_1());
+  }
+
+  channelGlyph(c, t) {
+    if (c.type === "D") {
+      const peer = this.dmPeer(c);
+      return this.withStatus(peer, this.avatar(peer, 20, t), 20, 11, 8, 12, t);
+    }
+    return svg(`mods/mattermost/icons/${c.type === "P" ? "lock" : c.type === "G" ? "users" : "globe"}.svg`).size(14).flex_none().text_color(t.muted);
+  }
+
+  // A layer over the row that shows ⋮ on hover: the row's own hover can't reach a child, and tracking the pointer in
+  // script would redraw the list on every row crossed.
+  hoverDots(id, t, onClick, bg) {
+    return h_flex().absolute().inset_0().justify_end().opacity(0).hover((s) => s.opacity(1))
+      .child(h_flex().id(id).w(34).h_full().pr(10).justify_end().items_center().bg(bg).text_color(t.muted)
+        .hover((s) => s.text_color(t.foreground))
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); onClick(e, cx); })
+        .child(svg("mods/mattermost/icons/dots.svg").size(14)));
+  }
+
+  myCustomStatus() {
+    return this.me ? liveStatus(this.users.get(this.me.id)?.custom) : null;
+  }
+
+  statusUntil(custom) {
+    return until(custom);
+  }
+
+  // As Mattermost's getSecondaryLabel words it.
+  dndNote() {
+    const end = this.dndEnd;
+    if (!end) return "Until indefinitely";
+    const when = new Date(end * 1000), time = clock(when.getTime());
+    const days = Math.round((new Date(when).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400e3);
+    if (days === 0) return `Until ${time}`;
+    if (days === 1) return `Until tomorrow ${time}`;
+    return `Until ${MONTHS[when.getMonth()]} ${when.getDate()}, ${when.getFullYear()} ${time}`;
+  }
+
+  dndPresets() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    const at = (ms) => Math.floor(ms / 1000);
+    return [["Don't clear", 0], ["30 mins", at(Date.now() + 30 * 60e3)], ["1 hour", at(Date.now() + 3600e3)], ["2 hours", at(Date.now() + 2 * 3600e3)], ["Tomorrow", at(tomorrow.getTime())]];
+  }
+
+  // Out of office with no "Do not ask me again" on file, Mattermost confirms any status change first.
+  setMyStatus(status, dndEnd, cx) {
+    if (this.autoResetPref === "" && this.statuses.get(this.me.id) === "ooo") return cx.spawn(async (cx) => this.checkStatus(cx, status));
+    cx.spawn(async (cx) => {
+      try {
+        await this.api(cx, `/users/${this.me.id}/status`, { method: "PUT", body: { user_id: this.me.id, status, ...(status === "dnd" ? { dnd_end_time: dndEnd } : {}) } });
+        this.statuses.set(this.me.id, status);
+        this.dndEnd = status === "dnd" ? dndEnd : 0;
+      } catch (e) {
+        this.error = e?.text ?? String(e?.message ?? e);
+      }
+      this.redraw(cx);
+    });
+  }
+
+  clearCustomStatus(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        await this.api(cx, "/users/me/status/custom", { method: "DELETE" });
+        const u = this.users.get(this.me.id);
+        if (u) u.custom = null;
+      } catch (e) {
+        this.error = e?.text ?? String(e?.message ?? e);
+      }
+      this.redraw(cx);
+    });
   }
 
   // Mattermost's status icons and its dark themes' colors; offline is the same in every theme.
@@ -3076,14 +3110,6 @@ export default class Mattermost extends View {
     this.statusCard = null;
   }
 
-  activeBar(t) {
-    return div().absolute().left(0).top(0).bottom(0).w(3).bg(t.accent);
-  }
-
-  slot(icon) {
-    return div().w(ICON_SLOT).flex_none().flex().items_center().justify_center().child(icon);
-  }
-
   channelMenu(c, box = null, mode = null) {
     const { count, mentions } = this.unread(c);
     this.openMenu({
@@ -3098,42 +3124,6 @@ export default class Mattermost extends View {
     }, box);
   }
 
-  channelRow(c, t, catMuted = false, grouped = false) {
-    const { count, mentions } = this.unread(c);
-    const active = c.id === (this.opening ?? this.selected);
-    const muted = catMuted || this.muted(c);
-    // Mattermost's sidebar: read text is the text color at 64% (theme "muted"); the active label and
-    // unread rows are full; muted rows dim label, icon and badge to 40% on top of that.
-    const label = active || count > 0 ? t.foreground : t.muted;
-    const iconColor = count > 0 ? t.foreground : t.muted;
-    const menu = () => this.channelMenu(c);
-    const custom = c.type === "D" ? liveStatus(this.users.get(this.dmPeer(c))?.custom) : null;
-    return h_flex().id(`ch-${c.id}`).relative().h(28).pl(grouped ? ROW_PAD + INDENT : ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
-      .when(active, (el) => el.bg(t.selected).child(this.activeBar(t))).hover((s) => s.bg(active ? t.selected : t.hover))
-      .on_click((_e, cx) => cx.spawn(async (cx) => this.open(c.id, cx)))
-      // Muted dims the icon, name and badge only, so a selected muted row keeps its full highlight and bar.
-      .child(this.slot(this.channelIcon(c, iconColor, t)).when(muted, (el) => el.opacity(0.4)))
-      .child(div().min_w(0).truncate().text_color(label).when(muted, (el) => el.opacity(0.4)).when(count > 0, (el) => el.font_semibold()).child(this.channelName(c)))
-      .children(custom ? [this.statusEmoji(`cs-${c.id}`, custom, 14, t).when(muted, (el) => el.opacity(0.4))] : [])
-      .child(div().flex_1())
-      .when(mentions > 0, (el) => el.child(this.badge(mentions, t).when(muted, (b) => b.opacity(0.4))))
-      .child(this.hoverDots(`chm-${c.id}`, t, menu, active ? t.selected : t.hover));
-  }
-
-  topBar(t, wide, back, ...children) {
-    return h_flex().h(36).flex_none().pl(back ? 6 : 12).pr(12).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(Boolean(back), (el) => el.child(this.backButton("back", t, "Back", (_e, cx) => { back(); this.redraw(cx); })))
-      .children(children);
-  }
-
-  // Mattermost stops its message box at half the window's height less 40px, and here the panel is the window.
-  fitBoxRows(height) {
-    const rows = Math.max(MIN_BOX_ROWS, Math.floor((height / 2 - 40) / BOX_LINE));
-    if (rows === this.boxRows) return;
-    this.boxRows = rows;
-    for (const box of this.boxes) box.input.set_auto_grow(1, rows);
-  }
-
   // Each box is a part of its own, notified by its own events and by every redraw.
   composer(_t, input = this.input) {
     return this.boxes.find((b) => b.input === input).part;
@@ -3144,20 +3134,13 @@ export default class Mattermost extends View {
     box.files = d?.file_ids?.length ?? 0;
     box.uploading = Boolean(this.uploads.get(box.key)?.length);
     box.canAttach = canUpload(this.clientConfig);
-    const c = this.channels.get(box.thread ? d?.channel_id ?? this.threadPosts.get(box.key)?.[0]?.channel_id : box.key);
-    // Mattermost offers priority on a channel's own box only, never on a reply.
-    const priority = !box.thread && priorityEnabled(this.clientConfig);
-    box.extraControls = priority ? [iconButton(`prio-${box.name}`, t, "alert-circle-outline", "Message priority", (e) => openPriorityPicker(this, box, e.bounds), { disabled: box.preview })] : [];
-    box.labels = priority ? priorityLabels(this.priorityOf(box.key), t, (cx) => this.setPriority(box.key, null, cx)) : null;
+    const c = this.channels.get(this.boxChannel(box));
     return composerView(this, box, t, {
       placeholder: box.thread || !c ? "Reply to this thread..." : `Write to ${this.channelName(c)}`,
       error: this.error,
       files: filePreviews(this, box, t),
+      boxed: this.section === "drafts" && !this.solo,
     });
-  }
-
-  previewText(box, t) {
-    return this.richText(`preview-${box.name}`, box.input.value(), t, { metadata: {} }, (box.width ?? 600) - 64, NO_KEYS);
   }
 
   boxChannel(box) {
@@ -3226,41 +3209,9 @@ export default class Mattermost extends View {
     this.redraw(cx);
   }
 
-  priorityOf(key) {
-    const p = this.drafts.get(key)?.priority ?? this.pendingPriority.get(key);
-    return hasPriority(p) ? p : null;
-  }
-
-  setPriority(key, priority, cx) {
-    const d = this.drafts.get(key);
-    if (d) {
-      this.drafts.set(key, { ...d, priority: priority ?? undefined, dirty: true, update_at: Date.now() });
-      this.draftsTouched = true;
-      if (!d.typing) this.pushDraft(key, cx);
-    } else if (priority) this.pendingPriority.set(key, priority);
-    else this.pendingPriority.delete(key);
-    for (const box of this.boxes) if (box.key === key) { cx.notify(box.part); box.input.focus(); }
-  }
-
   sendBox(box, cx) {
     box.input.focus();
     box.suggest.submit(null, cx, (cx) => this.send(box, cx));
-  }
-
-  // Mattermost keeps the bar's state per kind of box in the advanced_text_editor preferences, so it follows
-  // the person to the web app and back.
-  setFormatHidden(where, hidden, cx) {
-    this.formatHidden = { ...this.formatHidden, [where]: hidden };
-    for (const box of this.allBoxes()) if (box.where === where) { box.more = false; cx.notify(box.part); }
-    if (!this.me) return;
-    cx.spawn(async (cx) => {
-      try {
-        await this.api(cx, `/users/${this.me.id}/preferences`, { method: "PUT", body: [{ user_id: this.me.id, category: FORMAT_PREF, name: where, value: String(hidden) }] });
-      } catch (e) {
-        this.error = String(e?.message ?? e);
-        this.redraw(cx);
-      }
-    });
   }
 
   // The picker inserts at the caret, which the box keeps while the picker has the keyboard.
@@ -3303,7 +3254,9 @@ export default class Mattermost extends View {
       from += h;
     }
     if (gap) out.push(div().h(gap).flex_none());
-    const content = v_flex().id(`content-${key}`).absolute().left(0).right(0).pb(8)
+    // A conversation wider than its column is centered in it.
+    const inset = Math.max(0, ((sc.viewW || 0) - CONVERSATION_W) / 2);
+    const content = v_flex().id(`content-${key}`).absolute().left(inset).right(inset).pb(8)
       .on_size_change((size) => { sc.contentH = size.height / this.zoom(); })
       .children(top ? out : out.reverse());
     return div().id(`viewport-${key}`).relative().flex_1().min_h(0).overflow_hidden()
@@ -3358,7 +3311,7 @@ export default class Mattermost extends View {
       if (path) return image(path).size(size).flex_none().rounded_full();
     }
     if (fromWebhook(p) && p.props.override_username) {
-      return div().size(size).flex_none().rounded_full().bg(t.raised).flex().items_center().justify_center()
+      return div().size(size).flex_none().rounded_full().bg(alpha(t.foreground, 0.08)).flex().items_center().justify_center()
         .text_size(Math.round(size * 0.4)).text_color(t.muted).child(p.props.override_username.slice(0, 2).toUpperCase());
     }
     return this.avatar(p.user_id, size, t);
@@ -3374,10 +3327,10 @@ export default class Mattermost extends View {
     return !this.showJoinLeave && JOIN_LEAVE.has(p.type) && p.props?.addedUsername !== me && p.props?.removedUsername !== me;
   }
 
-  channelRows(c, all, t) {
+  channelRows(c, all, t, limit = this.shown, scope = "c") {
     const posts = this.showJoinLeave ? all : all.filter((p) => !this.hiddenPost(p));
     const rows = [];
-    const from = Math.max(0, posts.length - this.shown);
+    const from = Math.max(0, posts.length - limit);
     if (this.exhausted.has(c.id) && from === 0) rows.push(["start", () => div().px(this.gutter().pad).pt(10).text_size(12).text_color(t.dim).child("Start of channel")]);
     for (let i = from; i < posts.length; i++) {
       const p = posts[i], prev = posts[i - 1];
@@ -3386,59 +3339,53 @@ export default class Mattermost extends View {
       const beforeDate = Boolean(next) && day(next.create_at) !== day(p.create_at);
       const grouped = !newDay && this.grouped(p, prev);
       const date = newDay ? dateLabel(p.create_at) : null;
-      rows.push([`${p.id}-${grouped}-${newDay}-${beforeDate}`, () => this.postRow(p, grouped, t, false, { date, beforeDate, scope: "c" })]);
+      rows.push([`${p.id}-${grouped}-${newDay}-${beforeDate}`, () => this.postRow(p, grouped, t, false, { date, beforeDate, scope })]);
     }
     return rows;
   }
 
+  // Whether a thread or the details sit beside the conversation; otherwise they take its place, with a way back.
   rhsBeside() {
-    return this.width - (this.width >= WIDE ? this.sideW : 0) - this.rhsW >= MESSAGES_MIN;
+    return contextBeside(this.mode(), this.units());
   }
 
   rhsCovers() {
     return this.rhs && !this.rhsBeside();
   }
 
-  // Mattermost's expanded panel lies over the messages at min(60vw, 960px), or 750px on a smaller screen, and
-  // here the panel is the window.
+  // Mattermost's expanded panel lies over the messages at min(60vw, 960px), or 750px on a smaller screen.
   rhsExpandedW() {
-    const zoom = this.zoom(), width = this.width / zoom;
-    return Math.min(width * 0.6, width >= RHS_WIDE_SCREEN ? 960 : 750, width - (this.width >= WIDE ? this.sideW / zoom : 0));
+    const w = this.units(), mode = this.mode();
+    const reader = w - listWidth(mode, w) - (mode === "f" ? 220 : 0);
+    return Math.min(w * 0.6, w >= RHS_WIDE_SCREEN ? 960 : 750, reader);
   }
 
-  chat(t, wide) {
+  // The full panel keeps the details open beside a conversation, closable only once something else was asked for.
+  chat(t, mode) {
     const c = this.channels.get(this.selected);
-    if (this.rhsCovers()) return this.rhsView(t, c, true);
+    const kind = this.rhs ?? (mode === "f" ? "info" : null);
+    if (kind && !this.rhsBeside()) return this.rhsView(t, c, true);
     const messages = v_flex().flex_1().min_w(0).h_full()
-      .child(this.channelHeader(t, wide, c))
+      .child(this.channelHeader(t, c, kind))
       .child(this.posts.get(c.id) ? this.timeline(c.id, this.channelRows(c, this.posts.get(c.id), t), t, false) : div().flex_1())
       .when(this.detached === c.id, (el) => el.child(h_flex().h(32).flex_none().px(14).gap(8).items_center().border_t(1).border_color(t.border).text_size(12).text_color(t.muted)
         .child(div().flex_1().min_w(0).truncate().child("Viewing message history"))
         .child(div().id("to-recents").flex_none().font_semibold().cursor_pointer().text_color(t.accent).hover((s) => s.underline())
           .on_click((_e, cx) => cx.spawn(async (cx) => this.open(c.id, cx))).child("Jump to recents"))))
       .child(this.composer(t));
-    return this.rhs ? this.withRhs(messages, t, c) : messages;
-  }
-
-  withRhs(view, t, c) {
-    if (this.rhsCovers()) return this.rhsView(t, c, true);
-    if (this.rhsExpanded) {
-      return h_flex().relative().flex_1().min_w(0).h_full()
-        .child(view)
+    if (!kind) return messages;
+    if (this.rhsExpanded && this.rhs) {
+      return h_flex().relative().size_full()
+        .child(messages)
         // Without the stops, a press or the wheel here would also act on the messages under it.
         .child(div().absolute().top(0).bottom(0).right(0).w(this.rhsExpandedW()).border_l(1).border_color(t.border).bg(t.background).shadow_lg()
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_scroll_wheel((_e, cx) => cx.stop_propagation())
-          .child(this.rhsView(t, c, false)));
+          .child(this.rhsView(t, c, false, kind)));
     }
-    return h_resizable("mm-rhs").flex_1().min_w(0).h_full()
-      .on_resize((sizes, cx) => {
-        this.rhsW = Math.round(sizes[1]);
-        localStorage.setItem("rhsW", String(this.rhsW));
-        this.redraw(cx);
-      })
-      .child(resizable_panel().child(view))
-      .child(resizable_panel().size(this.rhsW).size_range(RHS_MIN, RHS_MAX).child(this.rhsView(t, c, false)));
+    return h_flex().size_full()
+      .child(messages)
+      .child(v_flex().w(CONTEXT_W[mode] ?? CONTEXT_W.m).flex_none().h_full().border_l_1().border_color(t.border).child(this.rhsView(t, c, false, kind)));
   }
 
   // herdr-chat's own tab instead of a terminal: its `chat` mod takes the messages as a prop and sends them once,
@@ -3469,157 +3416,81 @@ export default class Mattermost extends View {
   }
 
   headerButton(id, t, on, tip, onClick, ...children) {
-    return h_flex().id(id).h(26).px(5).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12)
-      .text_color(on ? t.accent : t.muted).when(on, (el) => el.bg(alpha(t.accent, 0.08)))
-      .hover((s) => s.bg(on ? alpha(t.accent, 0.12) : t.hover).text_color(on ? t.accent : t.foreground))
+    return h_flex().id(id).min_w(26).h(26).px(4).gap(4).flex_none().items_center().justify_center().rounded(5).cursor_pointer()
+      .text_size(11).font_normal().text_color(on ? t.accent : t.muted)
+      .hover((s) => s.bg(t.hover).text_color(on ? t.accent : t.foreground))
       .tooltip(tip).on_click(onClick).children(children);
   }
 
-  channelHeader(t, wide, c) {
+  // The conversation's name opens its menu; the buttons open the details beside it on their tab.
+  channelHeader(t, c, open) {
     const stats = this.stats.get(c.id);
     const custom = c.type === "D" ? liveStatus(this.users.get(this.dmPeer(c))?.custom) : null;
-    const favorite = this.categoryOf(c.id)?.type === "favorites";
-    const icon = (name) => svg(`mods/mattermost/icons/${name}.svg`).size(14);
-    // While Info is open, the top bar's buttons lead on from it, as its own rows do, so back returns to Info.
-    const from = (kind) => (this.rhs === "info" ? "info" : this.rhs !== kind ? this.rhsFrom : null);
-    const tool = (kind, name, count, tip) => this.headerButton(`hd-${kind}`, t, this.rhs === kind, tip, (_e, cx) => this.openRhs(kind, cx, from(kind)),
+    const icon = (name) => svg(`mods/mattermost/icons/${name}.svg`).size(15);
+    const tool = (kind, name, count, tip) => this.headerButton(`hd-${kind}`, t, open === kind, tip, (_e, cx) => this.openRhs(kind, cx),
       icon(name), ...(count != null ? [div().child(String(count))] : []));
-    const info = this.rhs === "info";
-    return h_flex().h(36).flex_none().pl(wide ? 10 : 6).pr(8).gap(2).items_center().border_b(1).border_color(t.border)
-      .when(!wide, (el) => el.child(this.backButton("back", t, "Back", (_e, cx) => {
-        this.selected = null;
-        localStorage.removeItem("selected");
-        this.redraw(cx);
-      })))
-      .child(this.headerButton("hd-star", t, false, favorite ? "Remove from Favorites" : "Add to Favorites", (_e, cx) => this.toggleFavorite(c, cx),
-        icon(favorite ? "star-filled" : "star").when(favorite, (el) => el.text_color(t.accent))))
-      .child(h_flex().id("hd-name").min_w(0).h(28).px(4).gap(4).items_center().rounded(4).cursor_pointer().hover((s) => s.bg(t.hover))
+    return h_flex().h(38).flex_none().px(11).gap(8).items_center().border_b_1().border_color(t.border)
+      .child(h_flex().id("hd-name").min_w(0).h(28).px(4).ml(-4).gap(8).items_center().rounded(5).cursor_pointer().hover((s) => s.bg(t.hover))
         .on_mouse_down("left", (e) => this.channelMenu(c, e.bounds ?? { ...e.position, width: 0, height: 0 }))
-        .when(c.type === "D", (el) => el.child(this.channelIcon(c, t.muted, t)))
-        .child(div().min_w(0).truncate().text_size(15).font_semibold().child(this.channelName(c)))
+        .child(this.channelGlyph(c, t))
+        .child(div().min_w(0).truncate().text_size(14).font_semibold().text_color(t.foreground).child(this.channelName(c)))
         .child(svg("mods/mattermost/icons/chevron-down.svg").size(12).flex_none().text_color(t.muted)))
-      .when(c.type !== "D", (el) => el.child(tool("members", "account", stats?.member_count, "Members")))
-      // Mattermost leaves the pin out until something is pinned; Info still lists Pinned messages.
-      .when(stats?.pinnedpost_count > 0, (el) => el.child(tool("pinned", "pin", stats.pinnedpost_count, "Pinned messages")))
-      .child(tool("files", "file-doc", null, "Channel files"))
       // Only the emoji opens the status card, as in Mattermost; the text beside it already says it.
-      .when(Boolean(custom), (el) => el.child(h_flex().min_w(0).ml(4).gap(6).items_center().text_size(12).text_color(t.muted)
+      .when(Boolean(custom), (el) => el.child(h_flex().min_w(0).gap(6).items_center().text_size(12).text_color(t.muted)
         .when(Boolean(custom.emoji), (el) => el.child(this.statusEmoji("hd-status", custom, 14, t)))
         .child(div().min_w(0).truncate().child(custom.text))))
       .child(div().flex_1())
-      .child(div().id("hd-info").size(28).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()
-        .bg(info ? t.accent : t.background).text_color(info ? t.accent_foreground : t.muted)
-        .hover((s) => s.bg(info ? t.accent : t.hover).text_color(info ? t.accent_foreground : t.foreground))
-        .tooltip("View Info").on_click((_e, cx) => this.openRhs("info", cx)).child(icon("info")));
+      .child(h_flex().flex_none().gap(2).items_center()
+        .when(c.type !== "D", (el) => el.child(tool("members", "users", stats?.member_count, "Members")))
+        // Mattermost leaves the pin out until something is pinned; the details still list Pinned messages.
+        .when(stats?.pinnedpost_count > 0, (el) => el.child(tool("pinned", "pin", stats.pinnedpost_count, "Pinned messages")))
+        .child(tool("files", "file-doc", null, "Files"))
+        .child(tool("info", "info", null, "Details")));
   }
 
-  rhsView(t, c, replacing) {
-    const titles = { info: "Info", members: "Members", pinned: "Pinned messages", files: "Files", thread: "Thread", mentions: "Recent Mentions", saved: "Saved messages" };
-    const results = RESULTS.has(this.rhs);
-    const thread = this.rhs === "thread" ? this.threadPosts.get(this.rhsThread) : null;
-    if (this.rhs === "thread") c = this.channelOf(thread?.[0]?.channel_id) ?? c;
+  // A thread or the conversation's details, beside the messages or in their place. Info, Members, Pinned and Files
+  // are tabs of one panel. `kind` is what shows when nothing was asked for, the full panel's details.
+  rhsView(t, c, replacing, kind = this.rhs) {
+    const thread = kind === "thread" ? this.threadPosts.get(this.rhsThread) : null;
+    if (kind === "thread") c = this.channelOf(thread?.[0]?.channel_id) ?? c;
+    const asked = Boolean(this.rhs);
     const close = (_e, cx) => { this.rhs = null; this.rhsFrom = null; this.redraw(cx); };
     const back = this.rhsFrom ? (_e, cx) => {
       this.rhs = this.rhsFrom;
       this.rhsFrom = null;
       this.redraw(cx);
-      if (!RESULTS.has(this.rhs)) this.loadRhs(cx);
+      this.loadRhs(cx);
     } : replacing && !this.solo ? close : null;
     // A floating popped-out copy moves by any press that isn't stopped, and its header is what's left for that.
     const stopPress = (_e, cx) => cx.stop_propagation();
+    const tab = (k, label) => div().id(`rhs-tab-${k}`).px(9).h(26).flex().flex_none().items_center().rounded(5).cursor_pointer().text_size(12)
+      .text_color(kind === k ? t.foreground : t.muted).when(kind === k, (el) => el.bg(alpha(t.foreground, 0.08))).hover((s) => s.text_color(t.foreground))
+      .on_click((_e, cx) => { if (this.rhs !== k) this.openRhs(k, cx); })
+      .child(label);
+    const details = kind !== "thread";
+    const buttons = asked || this.solo ? rhsButtons(this, t, c, thread, kind) : [];
     return v_flex().h_full().min_h(0).when(replacing, (el) => el.flex_1().min_w(0)).when(!replacing, (el) => el.size_full())
       .when(this.rhsExpanded, (el) => el.on_mouse_down_out((e, cx) => shrinkOnPress(this, e, cx)))
-      .child(h_flex().h(36).flex_none().pl(back ? 6 : results ? 10 : 14).pr(8).gap(results ? 6 : 8).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().h(38).flex_none().pl(back ? 6 : 11).pr(8).gap(8).items_center().border_b_1().border_color(t.border)
         .when(Boolean(back), (el) => el.child(this.backButton("rhs-back", t, BACK_TIPS[this.rhsFrom] ?? "Back", back)))
-        .child(div().when(results, (el) => el.min_w(0).truncate()).when(!results, (el) => el.flex_none()).text_size(14).font_semibold().child(titles[this.rhs]))
-        .when(this.rhs === "mentions", (el) => el.child(filtersButton(this, t)))
-        .when(!results, (el) => el.child(div().w(1).h(16).flex_none().bg(t.border)))
+        .child(div().flex_none().text_size(14).font_semibold().child(details ? (c?.type === "D" ? "Person details" : "Channel details") : "Thread"))
         // Mattermost's thread header takes you to the thread's root post in its channel.
-        .when(this.rhs === "thread" && Boolean(thread?.length), (el) => el.child(div().id("rhs-channel").min_w(0).h(24).px(8).ml(-8).flex().items_center().rounded(4).cursor_pointer()
-          .text_size(12).text_color(alpha(t.foreground, 0.75)).hover((s) => s.bg(alpha(t.foreground, 0.08)))
+        .when(kind === "thread" && Boolean(thread?.length), (el) => el.child(div().id("rhs-channel").min_w(0).h(24).px(6).flex().items_center().rounded(4).cursor_pointer()
+          .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => cx.spawn(async (cx) => this.jump(thread[0], cx)))
           .child(div().min_w(0).truncate().child(this.channelName(c)))))
-        .when(!results && this.rhs !== "thread", (el) => el.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.channelName(c))))
-        .child(h_flex().flex_none().when(results || this.rhs === "thread", (el) => el.ml_auto()).gap(4).items_center().children(rhsButtons(this, t, c, thread))))
-      .when(this.rhs === "mentions" && hasMentionFilters(this.mentionFilters, this.mentionTeam), (el) => el.child(filterChips(this, t)))
+        .child(div().flex_1())
+        .child(h_flex().flex_none().gap(2).items_center().children(buttons)))
+      .when(details && !this.solo, (el) => el.child(h_flex().flex_none().px(7).py(4).gap(2).border_b_1().border_color(t.border)
+        .child(tab("info", "Info"))
+        .when(c?.type !== "D", (el) => el.child(tab("members", "Members")))
+        .child(tab("pinned", "Pinned"))
+        .child(tab("files", "Files"))))
       .child(v_flex().flex_1().min_h(0).when(this.solo, (el) => el.on_mouse_down("left", stopPress))
-        .when(this.rhs === "thread", (el) => el
+        .when(kind === "thread", (el) => el
           .child(thread?.length ? this.timeline(`rhs-${this.rhsThread}`, this.threadRows(thread, t, "r", Infinity), t, false, this.rhsScroll) : div().flex_1())
           .child(this.composer(t, this.replyInput)))
-        .when(results, (el) => el.child(this.resultsBody(t)))
-        .when(this.rhs !== "thread" && !results, (el) => el.child(v_flex().id(`rhs-${this.rhs}`).flex_1().min_h(0).overflow_y_scrollbar().pb(8).children(this.rhsBody(t, c)))));
-  }
-
-  resultsBody(t) {
-    const kind = this.rhs, r = this.results[kind];
-    const message = (title, text) => v_flex().flex_1().items_center().justify_center().gap(8).px(24)
-      .child(div().text_size(17).font_semibold().text_center().child(title))
-      .when(Boolean(text), (el) => el.child(div().text_size(13).text_color(t.muted).text_center().child(text)));
-    if (r?.error && !r.posts) return message("Couldn't load this", r.error);
-    if (!r?.posts) return div().flex_1();
-    if (!r.posts.length) {
-      if (kind === "mentions" && hasMentionFilters(this.mentionFilters, this.mentionTeam)) return message("No mentions match your filters", "Try removing or changing a filter to see more of your mentions.");
-      return kind === "mentions"
-        ? message("No mentions yet", "Messages where someone mentions you or includes your trigger words are saved here.")
-        : message("No saved messages yet", "To save something for later, open the context menu on a message and choose Save Message. Saved messages are only visible to you.");
-    }
-    const scope = kind === "mentions" ? "m" : "s";
-    return this.timeline(`results-${kind}`, r.posts.map((p) => [p.id, () => this.resultRow(p, scope, t)]), t, true, this.resultsScroll);
-  }
-
-  // As Mattermost's getChannelName words it.
-  resultTitle(p, c) {
-    if (!c) return "";
-    const thread = p.reply_count > 0 || p.is_following;
-    if (c.type === "D") {
-      const who = `Direct Message (with ${this.userName(this.dmPeer(c))})`;
-      return thread ? `Thread in ${who}` : who;
-    }
-    return thread ? `Thread in ${this.channelName(c)}` : this.channelName(c);
-  }
-
-  resultRow(p, scope, t) {
-    const c = this.channelOf(p.channel_id), key = `${scope}:${p.id}`;
-    return v_flex().pb(8).on_mouse_move(() => { this.moveOn ??= key; })
-      .child(this.separator(dateLabel(p.create_at), t))
-      .child(h_flex().h(30).px(Math.min(16, this.gutter().pad)).pt(6).gap(4).items_center().text_color(alpha(t.foreground, 0.73))
-        .child(div().min_w(0).truncate().font_semibold().child(this.resultTitle(p, c)))
-        .when(c?.delete_at > 0, (el) => el.child(svg("mods/mattermost/icons/archive.svg").size(14).flex_none()))
-        .when(Boolean(this.resultTeam(c)), (el) => el.child(div().min_w(0).ml(4).px(8).truncate().border_l_1().border_color(alpha(t.foreground, 0.5))
-          .text_size(12).text_color(alpha(t.foreground, 0.5)).child(this.resultTeam(c)))))
-      .child(this.postRow(p, false, t, false, { scope }));
-  }
-
-  // Once you're in more than one team, except among pins, which all share a channel.
-  resultTeam(c) {
-    if (this.rhs === "pinned" || !c?.team_id || !(this.teams?.length > 1)) return null;
-    return this.teams.find((x) => x.id === c.team_id)?.display_name ?? null;
-  }
-
-  // A root post with replies has its thread footer instead, and one without shows this only under the pointer.
-  resultArrow(p, hovered) {
-    const c = this.channelOf(p.channel_id);
-    // Another team's post can only be answered from a popped-out window, which has no team of its own.
-    if (!this.solo && c?.team_id && c.team_id !== this.team.id) return false;
-    const count = p.reply_count ?? 0;
-    return (p.root_id || !p.is_following) && (p.root_id ? count > 0 || hovered : count === 0 && hovered);
-  }
-
-  // The reply count and Jump on the name's line, where Mattermost's search results keep them.
-  resultActions(p, t, hovered, scope) {
-    const count = p.reply_count ?? 0;
-    const labelled = scope === "m" && this.saved.has(p.id);
-    return h_flex().absolute().top(labelled ? 33 : 8).right(this.gutter().right).h(20).gap(4).items_center().text_size(12).font_semibold().text_color(alpha(t.foreground, 0.4))
-      .when(this.resultArrow(p, hovered), (el) => el.child(h_flex().id(`rs-reply-${p.id}`).h(20).px(4).gap(4).items_center().rounded(4).cursor_pointer()
-        .hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(t.foreground))
-        .tooltip("Reply")
-        .on_click((_e, cx) => this.openReply(p.root_id || p.id, cx))
-        .child(svg("mods/mattermost/icons/reply.svg").size(14))
-        .when(count > 0, (r) => r.child(String(count)))))
-      .child(div().id(`rs-jump-${p.id}`).h(20).px(4).flex().items_center().rounded(4).cursor_pointer()
-        .hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(t.foreground))
-        .on_click((_e, cx) => cx.spawn(async (cx) => this.jump(p, cx)))
-        .child("Jump"));
+        .when(details && Boolean(c), (el) => el.child(v_flex().id(`rhs-${kind}`).flex_1().min_h(0).overflow_y_scrollbar().pb(8).children(this.rhsBody(t, c, kind)))));
   }
 
   followButton(p, following, t, id) {
@@ -3630,11 +3501,11 @@ export default class Mattermost extends View {
       .child(following ? "Following" : "Follow");
   }
 
-  rhsBody(t, c) {
+  rhsBody(t, c, kind = this.rhs) {
     const stats = this.stats.get(c.id);
     const note = (text) => [div().p(16).text_size(13).text_color(t.dim).child(text)];
     const heading = (text) => div().px(16).pt(14).pb(6).text_size(11).font_semibold().text_color(t.dim).child(text.toUpperCase());
-    if (this.rhs === "info") {
+    if (kind === "info") {
       const favorite = this.categoryOf(c.id)?.type === "favorites", muted = this.muted(c);
       const tile = (id, icon, label, on, onClick) => v_flex().id(`info-${id}`).flex_1().h(66).gap(6).items_center().justify_center().rounded(4).cursor_pointer()
         .bg(on ? alpha(t.accent, 0.08) : alpha(t.foreground, 0.08)).text_color(on ? t.accent : t.foreground)
@@ -3689,7 +3560,7 @@ export default class Mattermost extends View {
         row("files", "file-doc", "Files", stats?.files_count),
       ];
     }
-    if (this.rhs === "members") {
+    if (kind === "members") {
       const ids = this.rhsData.members.get(c.id);
       if (!ids) return note("Loading…");
       return [
@@ -3701,7 +3572,7 @@ export default class Mattermost extends View {
           .child(div().flex_none().text_size(12).text_color(t.dim).child(`@${this.users.get(id)?.username ?? ""}`))),
       ];
     }
-    if (this.rhs === "pinned") {
+    if (kind === "pinned") {
       const posts = this.rhsData.pinned.get(c.id);
       if (!posts) return note("Loading…");
       if (!posts.length) return note("No pinned messages yet");
@@ -3721,7 +3592,7 @@ export default class Mattermost extends View {
           .cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.follow(`${this.cfg.url}/${this.team.name}/pl/${f.post_id}`, cx))
           .child(thumb ? image(thumb).size(40).flex_none().rounded(4)
-            : div().size(40).flex_none().rounded(4).bg(t.raised).flex().items_center().justify_center().text_size(10).font_semibold().text_color(t.muted).child((f.extension || "file").toUpperCase().slice(0, 4)))
+            : div().size(40).flex_none().rounded(4).bg(alpha(t.foreground, 0.08)).flex().items_center().justify_center().text_size(10).font_semibold().text_color(t.muted).child((f.extension || "file").toUpperCase().slice(0, 4)))
           .child(v_flex().min_w(0).gap(2)
             .child(div().truncate().text_size(13).font_semibold().child(f.name))
             .child(div().text_size(12).text_color(t.dim).child(`${fileSize(f.size)} • ${fileTime(f.create_at)}`)));
@@ -3745,157 +3616,13 @@ export default class Mattermost extends View {
     });
   }
 
-  threadsView(t, wide) {
-    const list = this.threads[this.threadTab];
-    const unreadCount = this.threadTotals.total_unread_threads;
-    const tab = (id, label, dot) => {
-      const on = this.threadTab === id;
-      return h_flex().id(`tab-${id}`).h(28).px(10).gap(6).items_center().rounded(6).cursor_pointer().font_semibold()
-        .text_color(on ? t.accent : t.muted).when(on, (el) => el.bg(t.selected)).hover((s) => s.text_color(on ? t.accent : t.foreground))
-        .on_click((_e, cx) => { this.threadTab = id; this.confirmMarkAll = false; this.redraw(cx); cx.spawn(async (cx) => this.loadThreads(cx)); })
-        .child(label)
-        .when(dot, (el) => el.child(div().size(6).rounded(3).bg(t.accent)));
-    };
-    const small = (id, label, primary, onClick) => this.smallButton(id, label, primary, onClick, t);
-    const empty = this.threadTab === "unread"
-      ? ["No unread threads", "You're all caught up"]
-      : ["No followed threads", "Threads you start, reply to or follow will show here"];
-    return v_flex().flex_1().min_w(0).h_full()
-      .child(this.topBar(t, wide, !wide && (() => { this.selected = null; localStorage.removeItem("selected"); }),
-        tab("all", "Followed threads", false),
-        tab("unread", "Unreads", unreadCount > 0),
-        div().flex_1(),
-        ...(this.confirmMarkAll
-          ? [div().text_size(12).text_color(t.muted).child("Mark all threads as read?"),
-             small("mark-all-no", "Cancel", false, (_e, cx) => { this.confirmMarkAll = false; this.redraw(cx); }),
-             small("mark-all-yes", "Mark read", true, (_e, cx) => this.markAllRead(cx))]
-          : [div().id("mark-all").p(4).rounded(6).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-              .tooltip("Mark all threads as read")
-              .on_click((_e, cx) => { this.confirmMarkAll = true; this.redraw(cx); })
-              .child(svg("mods/mattermost/icons/mark-read.svg").size(16))])))
-      .child(!list
-        ? div().flex_1()
-        : !list.length
-          ? v_flex().flex_1().items_center().justify_center().gap(8).px(20)
-            .child(div().text_size(17).font_semibold().text_color(t.foreground).child(empty[0]))
-            .child(div().text_size(13).text_color(t.muted).child(empty[1]))
-          : v_flex().id(`threads-${this.threadTab}`).flex_1().min_h(0).overflow_y_scrollbar()
-            .children(list.map((th) => this.threadCard(th, t))))
-      .when(Boolean(this.error), (el) => el.child(div().px(14).py(6).text_size(12).text_color(t.blocked).child(this.error)));
-  }
-
-  smallButton(id, label, primary, onClick, t) {
-    return div().id(id).px(8).py(3).rounded(6).cursor_pointer().text_size(12)
-      .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground)).when(!primary, (el) => el.text_color(t.muted))
-      .hover((s) => (primary ? s.opacity(0.88) : s.bg(t.hover).text_color(t.foreground)))
-      .on_click(onClick).child(label);
-  }
-
-  draftsView(t, wide) {
-    const list = this.filedDrafts();
-    return v_flex().flex_1().min_w(0).h_full()
-      .child(this.topBar(t, wide, !wide && (() => { this.selected = null; localStorage.removeItem("selected"); }),
-        div().flex_none().font_semibold().text_size(15).child("Drafts"),
-        div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child("Any messages you've started will show here")))
-      .child(list.length
-        ? v_flex().id("draft-list").flex_1().min_h(0).overflow_y_scrollbar().p(12).gap(12).children(list.map((d) => this.draftCard(d, t)))
-        : v_flex().flex_1().items_center().justify_center().gap(8).px(20)
-          .child(div().text_size(17).font_semibold().text_color(t.foreground).child("No drafts at the moment"))
-          .child(div().text_size(13).text_color(t.muted).child("Any messages you've started will show here.")))
-      .when(Boolean(this.error), (el) => el.child(div().px(14).py(6).text_size(12).text_color(t.blocked).child(this.error)));
-  }
-
-  draftCard(d, t) {
-    const key = draftKey(d), c = this.channels.get(d.channel_id);
-    const direct = c.type === "D" || c.type === "G";
-    const where = d.root_id ? `Thread ${direct ? "to" : "in"}:` : direct ? "To:" : "In:";
-    const files = d.file_ids?.length ?? 0;
-    const asking = this.draftAsk?.key === key ? this.draftAsk.action : null;
-    const answer = (cx, run) => { this.draftAsk = null; run?.(); this.redraw(cx); };
-    const action = (icon, tip, color, run) => div().id(`dr-${icon}-${key}`).size(28).flex().items_center().justify_center().rounded(4).cursor_pointer()
-      .text_color(color).hover((s) => s.bg(alpha(t.foreground, 0.08)))
-      .tooltip(tip)
-      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); run(cx); })
-      .child(svg(`mods/mattermost/icons/${icon}.svg`).size(16).text_color(color));
-    const ask = (name) => (cx) => { this.draftAsk = { key, action: name }; this.redraw(cx); };
-    const confirm = h_flex().id(`dr-ask-${key}`).flex_none().gap(6).items_center()
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .child(div().child(asking === "delete" ? "Delete this draft?" : "Send this message now?"))
-      .child(this.smallButton(`dr-no-${key}`, "Cancel", false, (_e, cx) => answer(cx), t))
-      .child(this.smallButton(`dr-yes-${key}`, asking === "delete" ? "Delete" : "Send", true, (_e, cx) => answer(cx, () => (asking === "delete" ? this.clearDraft(key, cx) : this.sendDraft(this.drafts.get(key), cx))), t));
-    return v_flex().id(`dr-${key}`).relative().flex_none().rounded(4).border_1().border_color(t.border).overflow_hidden().cursor_pointer()
-      .hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => cx.spawn(async (cx) => this.editDraft(d, cx)))
-      .child(h_flex().h(36).flex_none().px(14).gap(6).items_center().border_b(1).border_color(t.border).bg(t.background).text_size(12).text_color(t.muted)
-        .child(div().flex_none().child(where))
-        .child(this.slot(this.channelIcon(c, t.muted, t)))
-        .child(div().min_w(0).truncate().text_color(t.foreground).child(this.channelName(c)))
-        .child(div().flex_1())
-        .when(Boolean(asking), (el) => el.child(confirm))
-        .when(!asking, (el) => el
-          .child(div().flex_none().child(Date.now() - d.update_at < 60e3 ? "now" : ago(d.update_at)))
-          .child(div().h(16).px(4).flex_none().flex().items_center().rounded(4).bg(t.blocked).text_size(10).line_height("12px").font_semibold().text_color("#ffffff").child("DRAFT"))))
-      .child(h_flex().px(14).py(10).gap(10).items_start().max_h(240).overflow_hidden()
-        .child(this.withStatus(this.me.id, this.avatar(this.me.id, 32, t), 32, 15, 11, 20, t))
-        .child(v_flex().flex_1().min_w(0).text_size(14)
-          .child(div().mb(2).font_semibold().child(this.userName(this.me.id)))
-          .children(this.richText(`draft-${key}`, d.message, t, { metadata: {} }, this.contentWidth("c"), NO_KEYS))
-          .when(files > 0, (el) => el.child(div().pt(2).text_size(12).text_color(t.muted).child(plural(files, "attachment", "attachments"))))))
-      // Over the time and the tag on hover, by a layer the card's own hover can't do for a child.
-      .when(!asking, (el) => el.child(div().absolute().inset_0().opacity(0).hover((s) => s.opacity(1))
-        // Wide enough to cover the longest time label and the tag.
-        .child(h_flex().absolute().top(0).right(0).w(170).h(35).pr(10).gap(2).items_center().justify_end().bg(t.background)
-          .child(action("trash", "Delete draft", t.blocked, ask("delete")))
-          .child(action("pencil", "Edit draft", t.muted, (cx) => cx.spawn(async (cx) => this.editDraft(d, cx))))
-          .child(action("send", "Send draft", t.muted, ask("send"))))));
-  }
-
   preview(text) {
     return text
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\*\*|__|~~|`+/g, "")
       .replace(SHORTCODES, (whole, name) => this.emoji[name.toLowerCase()] ?? whole)
       .replace(/(^|\s)@([a-z0-9._\-]+)/gi, (whole, before, name) => { const label = this.mentionLabel(name); return label ? `${before}@${label}` : whole; })
       .replace(/\s+/g, " ").slice(0, 240);
-  }
-
-  threadCard(th, t) {
-    const p = th.post;
-    const c = this.channels.get(p.channel_id);
-    const direct = c?.type === "D" || c?.type === "G";
-    const unread = th.unread_replies > 0;
-    // As Mattermost draws it: the thread's author, then everyone else latest first.
-    const people = [{ id: p.user_id }, ...(th.participants ?? []).filter((u) => u?.id && u.id !== p.user_id).reverse()];
-    const shown = people.slice(0, 3);
-    const menu = () => this.openMenu({
-      kind: "thread", saved: this.saved.has(th.id), link: this.postLink(th.id),
-      thread: { id: th.id, channel_id: p.channel_id, unread, following: th.is_following !== false },
-    });
-    const open = this.thread === th.id;
-    return v_flex().id(`th-${th.id}`).relative().px(14).py(10).gap(6).border_b(1).border_color(t.border).cursor_pointer()
-      .when(open, (el) => el.bg(t.selected)).hover((s) => s.bg(open ? t.selected : t.hover))
-      .on_click((_e, cx) => cx.spawn(async (cx) => this.openThread(th.id, cx)))
-      // Shown on hover by a layer over the card, which the card's own hover can't do for a child.
-      .child(div().absolute().inset_0().opacity(0).hover((s) => s.opacity(1))
-        .child(div().id(`thm-${th.id}`).absolute().top(6).right(8).size(28).flex().items_center().justify_center().rounded(4)
-          .bg(t.hover).text_color(t.muted).hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(t.foreground))
-          .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); menu(); })
-          .child(svg("mods/mattermost/icons/dots.svg").size(16))))
-      .child(h_flex().gap(8).items_center()
-        .when(unread, (el) => el.child(div().size(7).flex_none().rounded(4).bg(t.accent)))
-        .child(div().flex_none().font_semibold().child(this.authorName(p)))
-        .when(Boolean(c) && !direct, (el) => el.child(div().flex_none().max_w(180).truncate().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(this.channelName(c))))
-        .child(div().flex_1())
-        .child(div().flex_none().text_size(11.5).text_color(t.dim).child(ago(th.last_reply_at || p.create_at))))
-      .child(div().max_h(38).overflow_hidden().text_color(unread ? t.foreground : t.muted).child(this.preview(p.message || "") || " "))
-      .child(h_flex().gap(8).items_center().text_size(12)
-        .child(h_flex().items_center()
-          .children(shown.map((u, i) => div().when(i > 0, (el) => el.ml(-6)).rounded_full().border_2().border_color(t.background).child(this.avatar(u.id, 20, t))))
-          .when(people.length > shown.length, (el) => el.child(div().ml(-6).rounded_full().border_2().border_color(t.background)
-            .child(div().size(20).rounded_full().bg(t.raised).flex().items_center().justify_center()
-              .text_size(9).font_semibold().text_color(t.muted).child(`+${people.length - shown.length}`)))))
-        // Mattermost counts only the new replies while there are some.
-        .child(div().font_semibold().text_color(unread ? t.accent : t.muted).child(unread ? `${th.unread_replies} new ${th.unread_replies === 1 ? "reply" : "replies"}` : replies(th.reply_count)))
-        .when(th.unread_mentions > 0, (el) => el.child(this.badge(th.unread_mentions, t))));
   }
 
   threadRows(posts, t, scope = "t", limit = this.shown) {
@@ -3915,24 +3642,23 @@ export default class Mattermost extends View {
     return rows;
   }
 
-  // Pinned to the bottom like a channel, the reply box under the newest reply.
-  threadView(t, wide, back) {
+  // The Threads section's reader: the thread pinned to the bottom like a channel, the reply box under the newest reply.
+  threadView(t) {
     const posts = this.threadPosts.get(this.thread);
     const c = this.channels.get(posts?.[0]?.channel_id);
     const following = this.following.get(this.thread);
     return v_flex().flex_1().min_w(0).h_full()
-      .child(this.topBar(t, wide, back && (() => this.closeThread()),
-        div().font_semibold().text_size(15).child("Thread"),
-        ...(c ? [div().w(1).h(16).flex_none().bg(t.border), div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(this.channelName(c))] : [div().flex_1()]),
-        ...(following !== undefined && posts?.length ? [this.followButton(posts[0], following, t, "thread-follow")] : []),
-        this.headerButton("thread-popout", t, false, POPOUT_TIP, (_e, cx) => openPopout(this, { popout: "thread", thread: this.thread }, cx), svg("mods/mattermost/icons/dock-window.svg").size(14)),
+      .child(header(t, div().flex_none().child("Thread"), ...(c ? [headerNote(t, this.channelName(c))] : []), div().flex_1(),
+        ...(following !== undefined && posts?.length ? [this.headerButton("thread-follow", t, following, following ? "Following" : "Follow",
+          (_e, cx) => this.toggleFollow(posts[0], cx), svg(`mods/mattermost/icons/${following ? "check" : "bell"}.svg`).size(15))] : []),
+        this.headerButton("thread-popout", t, false, POPOUT_TIP, (_e, cx) => openPopout(this, { popout: "thread", thread: this.thread }, cx), svg("mods/mattermost/icons/dock-window.svg").size(15)),
         ...(posts?.length ? [this.threadMenuButton(t, "thread-menu", this.thread, posts, following)] : [])))
-      .child(posts?.length ? this.timeline(`thread-${this.thread}`, this.threadRows(posts, t, "t", Infinity), t, false) : div().flex_1())
+      .child(posts?.length ? this.timeline(`thread-${this.thread}`, this.threadRows(posts, t, "t", Infinity), t, false, this.threadScroll) : div().flex_1())
       .child(this.composer(t, this.threadInput));
   }
 
   threadMenuButton(t, id, root, posts, following) {
-    return div().id(id).size(28).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer().text_color(t.muted)
+    return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(5).cursor_pointer().text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", (e) => this.openMenu({
         kind: "thread", saved: this.saved.has(root), link: this.postLink(root, this.channelOf(posts[0].channel_id)?.team_id || this.team.id), alignRight: true,
@@ -3946,7 +3672,7 @@ export default class Mattermost extends View {
     const path = this.media.avatar(u);
     if (path) return image(path).size(size).flex_none().rounded_full();
     const initials = (u ? this.userName(u.id) : "?").split(/\s+/).map((w) => w[0] ?? "").join("").slice(0, 2).toUpperCase();
-    return div().size(size).flex_none().rounded_full().bg(t.raised).flex().items_center().justify_center()
+    return div().size(size).flex_none().rounded_full().bg(alpha(t.foreground, 0.08)).flex().items_center().justify_center()
       .text_size(Math.round(size * 0.4)).text_color(t.muted).child(initials);
   }
 
@@ -4042,7 +3768,7 @@ export default class Mattermost extends View {
     }
     return h_flex().flex_wrap().gap(4).pt(4).children([...groups.values()].map((g) =>
       h_flex().id(`rx-${p.id}-${g.name}`).h(24).px(6).gap(4).items_center().rounded(6).border_1().cursor_pointer()
-        .border_color(g.mine ? t.accent : t.border).bg(g.mine ? t.selected : t.raised).hover((s) => s.border_color(t.accent))
+        .border_color(g.mine ? t.accent : t.border).bg(g.mine ? t.selected : alpha(t.foreground, 0.08)).hover((s) => s.border_color(t.accent))
         .tooltip(`${g.users.map((id) => this.userName(id)).join(", ")} reacted with :${g.name}:`)
         .on_click((_e, cx) => this.toggleReaction(p, g.name, g.mine, cx))
         .child(this.emojiEl(this.emojiToken(g.name), 16, t))
@@ -4056,27 +3782,23 @@ export default class Mattermost extends View {
 
   // Mattermost's post menu: over the post's top right corner, above the text rather than beside it.
   postActions(p, t, key, scope, date) {
-    const saved = this.saved.has(p.id);
     const agent = agentSpec();
-    const button = (id, icon, tip, on, handler) => div().id(`pa-${id}`).size(28).flex().items_center().justify_center().rounded(4).cursor_pointer()
-      .text_color(on ? t.accent : alpha(t.foreground, 0.64)).when(on, (el) => el.bg(alpha(t.accent, 0.08)))
-      .hover((s) => s.bg(on ? alpha(t.accent, 0.08) : alpha(t.foreground, 0.08)).text_color(on ? t.accent : alpha(t.foreground, 0.8)))
+    const button = (id, icon, tip, color, handler) => div().id(`pa-${id}`).size(26).flex().items_center().justify_center().rounded(5).cursor_pointer()
+      .text_color(color ?? t.muted).hover((s) => s.bg(t.hover).text_color(color ?? t.foreground))
       .tooltip(tip)
       .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); handler(e, cx); })
-      .child(svg(`mods/mattermost/icons/${icon}.svg`).size(18));
+      .child(svg(`mods/mattermost/icons/${icon}.svg`).size(16));
     const popup = (open) => (e) => open(e.bounds);
+    // A post shown beside a thread for context replies in the Threads section, where its thread then opens.
+    const reply = scope === "k" ? (_e, cx) => cx.spawn(async (cx) => this.openThread(p.root_id || p.id, cx)) : (_e, cx) => this.openReply(p.root_id || p.id, cx);
     // The bar sticks out over the post above, which would otherwise take the hover from under it; its
     // moves come before that post's.
-    // In a list of results it sits on the conversation's name, clear of Jump.
-    const result = scope === "m" || scope === "s";
-    return h_flex().id(`pa-bar-${p.id}`).on_mouse_move(() => { this.moveOn ??= key; }).absolute().top(result ? -30 : date ? DATE_HALF - 6 : -12).right(16).p(4).gap(0).rounded(4).border_1().border_color(alpha(t.foreground, 0.2))
-      .bg(t.background).shadow_md()
-      .child(button("emoji", "smile-plus", "Add Reaction", false, popup((box) => this.openPicker(p, box))))
-      .child(agent
-        ? button("agent", "claude-code", agent.label, false, (_e, cx) => this.sendToAgent(p, agent, cx))
-        : button("save", saved ? "bookmark-filled" : "bookmark", saved ? "Remove from Saved" : "Save Message", saved, (_e, cx) => this.toggleSave(p, cx)))
-      .when(scope === "c", (el) => el.child(button("reply", "reply", "Reply", false, (_e, cx) => this.openReply(p.root_id || p.id, cx))))
-      .child(button("more", "ellipsis", "Message actions", false, popup((box) => this.postMenu(p, box, { scope }))));
+    return h_flex().id(`pa-bar-${p.id}`).on_mouse_move(() => { this.moveOn ??= key; }).absolute().top(date ? DATE_HALF - 6 : -8).right(10).p(2).gap(1).rounded(6)
+      .bg(t.raised).border_1().border_color(t.border).shadow_md()
+      .child(button("emoji", "smile-plus", "Add Reaction", null, popup((box) => this.openPicker(p, box))))
+      .when(Boolean(agent), (el) => el.child(button("agent", "claude-code", agent.label, VIOLET, (_e, cx) => this.sendToAgent(p, agent, cx))))
+      .when(scope === "c" || scope === "k", (el) => el.child(button("reply", "reply", "Reply", null, reply)))
+      .child(button("more", "ellipsis", "Message actions", null, popup((box) => this.postMenu(p, box, { scope }))));
   }
 
   postRow(p, grouped, t, inThread, options) {
@@ -4093,17 +3815,15 @@ export default class Mattermost extends View {
   drawPost(p, grouped, t, inThread, { date = null, beforeDate = false, scope = null } = {}) {
     const key = scope && `${scope}:${p.id}`;
     const hovered = Boolean(key) && this.hoverPost === key;
-    const result = scope === "m" || scope === "s";
     const row = h_flex().id(`post-${p.id}`).relative().items_start().pl(this.gutter().pad).pr(this.gutter().right)
       .pt(date ? 8 + DATE_HALF : grouped ? 0 : 8).pb(beforeDate ? 6 + DATE_HALF : 3)
       .text_size(14).line_height("20px")
       // The expanded panel lies over these rows without blocking the pointer from them.
       .when(!(this.rhsExpanded && (scope === "c" || scope === "t")), (el) => el.hover((s) => s.bg(alpha(t.foreground, 0.04))))
-      .when(!result && this.highlighted === p.id, (el) => el.bg(alpha(this.mentionBg, 0.5)))
+      .when(this.highlighted === p.id, (el) => el.bg(alpha(this.mentionBg, 0.5)))
       .when(Boolean(key), (el) => el.on_mouse_move(() => { this.moveOn ??= key; }));
     return row.children(isSystem(p) ? this.systemPost(p, t) : this.userPost(p, grouped, t, inThread, hovered, scope))
       .when(Boolean(date), (el) => el.child(this.dateLine(date, t)))
-      .when(result, (el) => el.child(this.resultActions(p, t, hovered, scope)))
       .when(hovered && !isSystem(p) && !isEphemeral(p) && !this.isEditing(p, scope), (el) => el.child(this.postActions(p, t, key, scope, date)));
   }
 
@@ -4115,7 +3835,7 @@ export default class Mattermost extends View {
     return h_flex().pt(6).gap(8).items_center().text_size(12)
       .when(shown.length > 0, (el) => el.child(h_flex().items_center()
         .children(shown.map((id, i) => div().when(i > 0, (d) => d.ml(-6)).rounded_full().border_2().border_color(t.background).child(this.avatar(id, 22, t))))
-        .when(people.length > shown.length, (el) => el.child(div().ml(-6).size(26).rounded_full().border_2().border_color(t.background).bg(t.raised)
+        .when(people.length > shown.length, (el) => el.child(div().ml(-6).size(26).rounded_full().border_2().border_color(t.background).bg(alpha(t.foreground, 0.08))
           .flex().items_center().justify_center().text_size(10).font_semibold().text_color(t.muted).child(`+${people.length - shown.length}`)))))
       .child(h_flex().id(`replies-${p.id}`).h(24).px(6).gap(4).items_center().rounded(4).cursor_pointer().font_semibold().text_color(t.accent)
         .hover((s) => s.bg(alpha(t.accent, 0.08)))
@@ -4130,7 +3850,7 @@ export default class Mattermost extends View {
     const line = () => div().h(1).flex_1().bg(alpha(t.foreground, 0.12));
     return h_flex().absolute().left(0).right(0).top(-DATE_HALF).h(2 * DATE_HALF).items_center()
       .child(line())
-      .child(div().h_full().px(13).flex().items_center().rounded(DATE_HALF).bg(t.background).text_size(13).font_bold().text_color(t.foreground).child(label))
+      .child(div().h_full().px(13).flex().items_center().rounded(DATE_HALF).text_size(13).font_bold().text_color(t.foreground).child(label))
       .child(line());
   }
 
@@ -4145,9 +3865,7 @@ export default class Mattermost extends View {
     const custom = person && !grouped ? liveStatus(this.users.get(p.user_id)?.custom) : null;
     // Mattermost's post avatar ring: 15px at right -3, bottom -4 of the 32px avatar, an 11px icon.
     const avatar = person ? this.withStatus(p.user_id, this.postAvatar(p, 32, t), 32, 15, 11, 20, t) : this.postAvatar(p, 32, t);
-    // A list of saved posts doesn't need to say so on each.
-    const saved = scope !== "p" && scope !== "s" && this.saved.has(p.id);
-    const result = scope === "m" || scope === "s";
+    const saved = scope !== "p" && this.saved.has(p.id);
     // Mattermost's pre-header: the bookmark at the avatar column's edge, "Saved" over the name.
     return [
       v_flex().w(this.gutter().col).flex_none()
@@ -4156,21 +3874,20 @@ export default class Mattermost extends View {
         .when(!grouped, (el) => el.child(div().pt(2).pl(this.gutter().inset).child(avatar))),
       v_flex().flex_1().min_w(0)
         .when(saved, (el) => el.child(div().h(20).mb(5).flex().items_center().text_size(12).text_color(t.accent).child("Saved")))
-        .when(!grouped, (el) => el.child(h_flex().mb(2).gap(8).items_center().when(result, (h) => h.pr(this.resultArrow(p, hovered) ? 84 : 44))
-          .child(div().font_semibold().text_color(t.foreground).when(result, (n) => n.min_w(0).truncate()).child(this.authorName(p)))
+        .when(!grouped, (el) => el.child(h_flex().mb(1).gap(7).items_baseline()
+          .child(div().font_semibold().text_color(t.foreground).child(this.authorName(p)))
           .when(Boolean(custom?.emoji), (el) => el.child(this.statusEmoji(`ps-${p.id}`, custom, 16, t).ml(-4)))
           .when(this.isBot(p), (el) => el.child(div().h(16).px(4).rounded(4).flex().items_center().bg(alpha(t.foreground, 0.08))
             .text_size(10).line_height("12px").font_semibold().text_color(t.foreground).child("BOT")))
-          .child(div().flex_none().text_size(12).text_color(t.foreground).opacity(0.73).child(time))
+          .child(div().flex_none().text_size(11).text_color(t.dim).child(time))
           .when(!p.root_id && priorityEnabled(this.clientConfig) && Boolean(priorityTag(p.metadata?.priority?.priority, t)), (el) => el.child(priorityTag(p.metadata.priority.priority, t)))))
-        .children(this.isEditing(p, scope) ? [this.editBox.part] : this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))
+        .children(this.isEditing(p, scope) ? [this.editBox.part] : [v_flex().w_full().max_w(TEXT_W).children(this.richText(p.id, p.message ?? "", t, p, this.contentWidth(scope)))])
         // The files are in the editor while it's open.
         .children(this.isEditing(p, scope) ? [] : postFiles(this, p, t, scope))
         .children(postAttachments(this, p, t, scope))
         .children(postEmbeds(this, p, t, scope))
         .when(isEphemeral(p), (el) => el.child(div().text_size(12).text_color(alpha(t.foreground, 0.56)).child("(Only visible to you)")))
-        // Mattermost's mention list leaves reactions out.
-        .when(scope !== "m" && (p.metadata?.reactions ?? []).length > 0, (el) => el.child(this.reactions(p, t, hovered)))
+        .when((p.metadata?.reactions ?? []).length > 0, (el) => el.child(this.reactions(p, t, hovered)))
         .when(threadRoot, (el) => el.child(this.threadFooter(p, t, hovered))),
     ];
   }

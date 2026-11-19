@@ -1,44 +1,32 @@
-// Mattermost's message box: the bordered box with the text, the formatting bar under it and the actions on
-// its right (show or hide the bar, emoji, send). Each box is a retained part, so a press on the bar redraws
-// the box and not the messages above it. The box that edits a post in place is the same editor in Mattermost's
-// edit mode: no send button, never edge to edge, and Save and Cancel under it.
+// The message box: a flat bar across the bottom of a conversation with attach, the text, emoji and a send button
+// that shows once there's something to send. Each box is a retained part, so a press in it redraws the box and not
+// the messages above it. The box that edits a post in place is the same bar in a border of its own, with Save and
+// Cancel under it instead of send.
 import { div, svg } from "gpui-kit";
-import { v_flex, h_flex, Textarea, Popup } from "gpui-base";
+import { v_flex, h_flex, Textarea } from "gpui-base";
 import { settings } from "herdr";
 import { FONT, alpha } from "../main.js";
 import { chooseFiles, filesAsText, pasteFiles, uploadFiles } from "./upload.js";
-import { CONTROLS, applyMarkdown, isWithinCodeBlock, layoutMode, readSelection, shortcut, splitControls, tooltip } from "./format.js";
+import { applyMarkdown, isWithinCodeBlock, readSelection, shortcut } from "./format.js";
 
-const BAR_H = 48;
 const LINE = 20;
-// The text's padding, from Mattermost's .custom-textarea: 13px 0 12px 16px.
-const TEXT_TOP = 13, TEXT_BOTTOM = 12, TEXT_LEFT = 16;
-const ONE_LINE = TEXT_TOP + LINE + TEXT_BOTTOM;
-// Below this window width Mattermost runs the box from edge to edge.
-const NARROW_SCREEN = 768;
-export const FORMAT_PREF = "advanced_text_editor";
+const BUTTON = 36;
+const PAD_Y = 6;
 
-const icon = (name, size = 18) => svg(`mods/mattermost/icons/compass/${name}.svg`).size(size);
 const zoom = () => Number(settings()?.zoom) || 1;
 
-export function iconButton(id, t, glyph, tip, press, { active = false, disabled = false } = {}) {
-  return div().id(id).size(32).flex().flex_none().items_center().justify_center().rounded(4)
-    .text_color(active ? t.accent : alpha(t.foreground, disabled ? 0.32 : 0.56))
-    .when(active, (el) => el.bg(alpha(t.accent, 0.08)))
-    .when(!disabled, (el) => el.cursor_pointer().hover((s) => (active ? s : s.bg(alpha(t.foreground, 0.08)).text_color(alpha(t.foreground, 0.72)))))
+function roundButton(id, t, icon, tip, press, { primary = false, disabled = false } = {}) {
+  return div().id(id).size(BUTTON).my(PAD_Y).flex().flex_none().items_center().justify_center().rounded_full()
+    .when(primary, (el) => el.bg(t.accent)).text_color(primary ? t.accent_foreground : disabled ? alpha(t.muted, 0.5) : t.muted)
+    .when(primary && disabled, (el) => el.opacity(0.5))
+    .when(!disabled, (el) => el.cursor_pointer().hover((s) => (primary ? s.opacity(0.88) : s.bg(t.hover).text_color(t.foreground))))
     .tooltip(tip)
-    // Acting on the press keeps the box's keyboard and selection, as Mattermost's preventDefault does.
+    // Acting on the press keeps the box's keyboard and selection.
     .on_mouse_down("left", (e, cx) => {
       cx.stop_propagation();
       if (!disabled) press(e, cx);
     })
-    .child(typeof glyph === "string" ? icon(glyph) : glyph);
-}
-
-const separator = (t) => div().w(1).h(24).flex_none().bg(alpha(t.foreground, 0.16));
-
-export function formatHidden(panel, box) {
-  return Boolean(panel.formatHidden?.[box.where]);
+    .child(svg(`mods/mattermost/icons/${icon}.svg`).size(primary ? 15 : 18));
 }
 
 // Replaces the box's text and selection as an edit would, keeping the draft and the suggestions in step.
@@ -53,13 +41,10 @@ export function setText(panel, box, text, start, end = start) {
   box.empty = !text.trim();
 }
 
-// The placeholder and the send button follow whether there's text, and actions moved below a long text
-// return once it's shorter than when it outgrew them. True when the box needs drawing again.
+// The placeholder and the send button follow whether there's text. True when the box needs drawing again.
 export function noteText(box) {
-  const value = box.input.value(), empty = !value.trim();
-  const short = Boolean(box.long) && value.length < box.longAt;
-  if (short) box.long = false;
-  if (empty === box.empty && !short) return false;
+  const empty = !box.input.value().trim();
+  if (empty === box.empty) return false;
   box.empty = empty;
   return true;
 }
@@ -68,7 +53,7 @@ export function noteText(box) {
 // reports the change, so the text comes out again and the files go up instead, as a drop of them would.
 // True when it took the paste.
 export function takeFilePaste(panel, box, before, now, cx) {
-  if (!box.canAttach || box.preview) return false;
+  if (!box.canAttach) return false;
   let start = 0;
   while (start < before.length && start < now.length && before[start] === now[start]) start++;
   let tail = 0;
@@ -84,13 +69,6 @@ export function takeFilePaste(panel, box, before, now, cx) {
   return true;
 }
 
-export function applyFormat(panel, box, mode, cx) {
-  if (box.preview) return;
-  const res = applyMarkdown({ markdownMode: mode, ...readSelection(box.input) });
-  setText(panel, box, res.message, res.selectionStart, res.selectionEnd);
-  cx.notify(box.part);
-}
-
 // Emoji go in at the caret with a space after, and one before when they'd touch a word.
 export function insertAtCaret(panel, box, text) {
   const { message, selectionStart, selectionEnd } = readSelection(box.input);
@@ -98,42 +76,12 @@ export function insertAtCaret(panel, box, text) {
   setText(panel, box, message.slice(0, selectionStart) + spaced + message.slice(selectionEnd), selectionStart + spaced.length);
 }
 
-export function toggleFormatBar(panel, box, cx) {
-  if (box.preview) return;
-  panel.setFormatHidden(box.where, !formatHidden(panel, box), cx);
-}
-
-// The preview takes the keyboard from the text box it hides, as Mattermost's preview area does, so its
-// shortcuts and Esc still reach the box.
-function focusBox(box) {
-  if (box.preview) box.previewFocus.focus();
-  else box.input.focus();
-}
-
-// The text drawn as it will post, in place of the box; the message is parsed here because a render mustn't.
-export function togglePreview(panel, box, cx) {
-  if (!box.preview && (box.empty || formatHidden(panel, box))) return;
-  box.preview = !box.preview;
-  if (box.preview) panel.parsed(`preview-${box.name}`, box.input.value());
-  focusBox(box);
-  cx.notify(box.part);
-}
-
 function onKey(panel, box, e, cx) {
-  if (e.keystroke === "escape" && box.more) {
-    box.more = false;
-    cx.notify(box.part);
-    cx.stop_propagation();
-    return;
-  }
   const action = shortcut(e.keystroke);
   if (!action) return;
   cx.stop_propagation();
   if (action === "emoji") return panel.openComposerPicker(box);
   if (action === "attach") return box.canAttach && cx.spawn(async (cx) => chooseFiles(panel, box, cx));
-  if (action === "toggle") return toggleFormatBar(panel, box, cx);
-  if (action === "preview") return togglePreview(panel, box, cx);
-  if (box.preview) return;
   const sel = readSelection(box.input);
   if (sel.selectionStart && isWithinCodeBlock(sel.message, sel.selectionStart)) return;
   if (action === "link-selected" && sel.selectionStart === sel.selectionEnd) return;
@@ -143,147 +91,45 @@ function onKey(panel, box, e, cx) {
   cx.notify(box.part);
 }
 
-function control(panel, box, mode, t) {
-  const c = CONTROLS[mode];
-  return iconButton(`fmt-${box.name}-${mode}`, t, c.icon, tooltip(c.tip, c.keys), (_e, cx) => applyFormat(panel, box, mode, cx), { disabled: box.preview });
-}
-
-// Mattermost's bar gives up controls into a "more" row as it narrows, by its own width.
-function formattingBar(panel, box, t) {
-  const mode = layoutMode(box.width ?? 1000, box.rhs);
-  const extra = box.extraControls?.length ?? 0;
-  const { shown, hidden } = splitControls(mode, extra, box.rhs);
-  const wide = mode === "wide";
-  const out = [];
-  for (const m of shown) {
-    out.push(control(panel, box, m, t));
-    if (m === "heading" && wide) out.push(separator(t));
-  }
-  if (extra) {
-    if (wide) out.push(separator(t));
-    out.push(...box.extraControls);
-  }
-  if (hidden.length) {
-    const row = h_flex().p(5).gap(2).rounded(4).border_1().border_color(alpha(t.foreground, 0.16)).bg(t.background).shadow_md()
-      .children(hidden.map((m) => control(panel, box, m, t)));
-    // The row is centred over the button, as Mattermost's floating "top" placement puts it.
-    const rowW = hidden.length * 32 + (hidden.length - 1) * 2 + 12;
-    const trigger = iconButton(`fmt-${box.name}-more`, t, "dots-horizontal", "More formatting options", (_e, cx) => {
-      box.more = !box.more;
-      cx.notify(box.part);
-    }, { active: box.more });
-    out.push(Popup.new(`fmt-${box.name}-more-row`, trigger).anchor("bottom_left")
-      .when(Boolean(box.more), (el) => el.content(div().pb(4).ml(Math.min(0, 16 - rowW / 2) + (mode === "min" ? 55 : 0)).child(row))));
-  }
-  return h_flex().flex_1().min_w(0).h(BAR_H).pl(7).gap(2).items_center().overflow_hidden().children(out);
-}
-
-function sendButton(panel, box, t, disabled) {
-  return div().id(`send-${box.name}`).w(48).h(32).flex().flex_none().items_center().justify_center().rounded(4)
-    .bg(disabled ? alpha(t.foreground, 0.08) : t.accent).text_color(disabled ? alpha(t.foreground, 0.32) : "#ffffff")
-    .when(!disabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.9)).tooltip("Send Now  Enter"))
-    .on_mouse_down("left", (_e, cx) => {
-      cx.stop_propagation();
-      if (!disabled) panel.sendBox(box, cx);
-    })
-    .child(icon("send"));
-}
-
-function actions(panel, box, t) {
-  const hiddenBar = formatHidden(panel, box);
-  const aa = div().id(`fmt-${box.name}-toggle`).h(32).px(6).flex().flex_none().items_center().rounded(4)
-    .text_color(alpha(t.foreground, box.preview ? 0.32 : 0.56))
-    .when(!box.preview, (el) => el.cursor_pointer().hover((s) => s.bg(alpha(t.foreground, 0.08)).text_color(alpha(t.foreground, 0.72))))
-    .tooltip(tooltip(hiddenBar ? "Show Formatting" : "Hide Formatting", "Ctrl+Alt+T"))
-    .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); toggleFormatBar(panel, box, cx); })
-    .child(icon("format-letter-case")).child(icon(hiddenBar ? "chevron-down" : "chevron-up", 12));
-  return h_flex().flex_none().gap(2).items_center()
-    .child(aa)
-    .child(separator(t))
-    .when(Boolean(box.canAttach), (el) => el.child(iconButton(`attach-${box.name}`, t, "paperclip", tooltip("Upload files", "Ctrl+U"),
+// `boxed` draws the bar in a border of its own, as on a page rather than at the bottom of a conversation.
+export function composerView(panel, box, t, { placeholder, error, files, footer = [], boxed = false }) {
+  const framed = box.edit || boxed;
+  const sendable = (!box.empty || Boolean(box.files)) && !box.edit;
+  const text = div().relative().flex_1().min_w(0).my(PAD_Y)
+    .child(box.suggest.around(Textarea.new(box.input).w_full().pl(10).pr(8).py(8)
+      .line_height(`${LINE}px`).rounded(0).border_0().bg(framed ? t.background : alpha(t.background, 0)).text_size(14).font_family(FONT)))
+    .when(box.empty, (el) => el.child(div().absolute().left(10).top(8).right(8).h(LINE).truncate()
+      .text_size(14).line_height(`${LINE}px`).text_color(t.dim).child(placeholder)));
+  const bar = h_flex().px(6).gap(2).items_end()
+    .when(Boolean(box.canAttach), (el) => el.child(roundButton(`attach-${box.name}`, t, "paperclip", "Attach files  Ctrl+U",
       (_e, cx) => cx.spawn(async (cx) => chooseFiles(panel, box, cx)))))
-    .child(iconButton(`emoji-${box.name}`, t, "emoticon-happy-outline", tooltip("Emoji picker", "Ctrl+Alt+E"), (e) => {
+    .child(text)
+    .child(roundButton(`emoji-${box.name}`, t, "smile", "Emoji  Ctrl+Alt+E", (e) => {
       box.pickerAt = e.bounds ?? null;
       panel.openComposerPicker(box);
-    }, { disabled: box.preview }))
-    .when(!box.edit, (el) => el.child(sendButton(panel, box, t, (box.empty && !box.files) || box.uploading)));
-}
-
-export function composerView(panel, box, t, { placeholder, error, files, footer = [] }) {
-  const w = (panel.width ?? 1000) / zoom();
-  const edge = !box.edit && w < NARROW_SCREEN;
-  const hiddenBar = formatHidden(panel, box);
-  // With the bar hidden, the actions share the first line until the text needs more; Mattermost's
-  // formatting spacer keeps them below in a reply box.
-  const inline = hiddenBar && !files && !(box.spacer ?? box.rhs) && !box.long;
-  // The actions lie over the text's right end, so the text box wraps at the width it's drawn at and grows
-  // when it does, which tells the box to move them below.
-  const textRight = inline ? (box.actionsW ?? 190) + 14 : hiddenBar ? 16 : 48;
-  // Mattermost keeps the preview's eye in the box's top right while the bar shows and there's text.
-  const eye = !hiddenBar && (!box.empty || box.preview);
-  const text = box.preview ? v_flex().track_focus(box.previewFocus).flex_1().min_w(0).min_h(ONE_LINE).pl(TEXT_LEFT).pr(48).pt(TEXT_TOP).pb(TEXT_BOTTOM).text_size(14)
-    .children(panel.previewText(box, t)) : div().relative().flex_1().min_w(0)
-    .on_size_change((size, cx) => {
-      const long = size.height / zoom() > ONE_LINE + 4;
-      if (long === Boolean(box.long)) return;
-      // Below the text the line is longer and fits again, so the actions come back only once the text is
-      // shorter than when it outgrew them.
-      const length = box.input.value().length;
-      if (!long && length >= (box.longAt ?? 0)) return;
-      box.long = long;
-      box.longAt = long ? length : 0;
-      cx.notify(box.part);
-    })
-    .child(box.suggest.around(Textarea.new(box.input).w_full().pl(TEXT_LEFT).pr(textRight).pt(TEXT_TOP).pb(TEXT_BOTTOM)
-      .line_height(`${LINE}px`).rounded(0).border_0().bg(t.background).text_size(14).font_family(FONT)))
-    .when(box.empty && !box.preview, (el) => el.child(div().absolute().left(TEXT_LEFT).top(TEXT_TOP).right(textRight).h(LINE).truncate()
-      .text_size(14).line_height(`${LINE}px`).text_color(alpha(t.foreground, 0.64)).child(placeholder)));
-  const border = alpha(t.foreground, box.focused ? 0.32 : 0.16);
-  const frame = box.suggest.keys(v_flex().id(`composer-${box.name}`), 0).relative().bg(t.background)
-    .when(!edge, (el) => el.border_2().rounded(4))
-    // Edge to edge, the box ends the panel unless an error has to show under it.
-    .when(edge, (el) => el.border_t_2().when(Boolean(error), (e) => e.border_b_2()))
-    .border_color(border)
-    .when(!box.focused, (el) => el.hover((s) => s.border_color(alpha(t.foreground, 0.24))))
-    .on_size_change((size, cx) => {
-      const width = size.width / zoom() - (edge ? 0 : 4);
-      if (Math.abs(width - (box.width ?? 0)) < 1) return;
-      const before = box.width === undefined ? null : layoutMode(box.width, box.rhs);
-      box.width = width;
-      if (layoutMode(width, box.rhs) !== before) cx.notify(box.part);
-    })
+    }))
+    .when(sendable, (el) => el.child(roundButton(`send-${box.name}`, t, "send", "Send  Enter", (_e, cx) => panel.sendBox(box, cx),
+      { primary: true, disabled: box.uploading })));
+  const frame = box.suggest.keys(v_flex().id(`composer-${box.name}`), 0).relative()
+    .when(framed, (el) => el.bg(t.background))
+    .when(!framed, (el) => el.border_t_1().border_color(box.focused ? t.accent : t.border))
+    .when(framed, (el) => el.border_1().rounded(6).border_color(box.focused ? t.accent : t.border))
+    .on_size_change((size) => { box.width = size.width / zoom(); })
     .on_key_down((e, cx) => onKey(panel, box, e, cx))
     .when(Boolean(box.canAttach), (el) => el.on_drop((e, cx) => { if (e.paths?.length) cx.spawn(async (cx) => uploadFiles(panel, box, e.paths, cx)); }))
     .on_mouse_down("left", (_e, cx) => {
       cx.stop_propagation();
-      focusBox(box);
+      box.input.focus();
       box.suggest.moved(cx);
-      if (box.more) {
-        box.more = false;
-        cx.notify(box.part);
-      }
     })
-    .when(Boolean(box.labels), (el) => el.child(box.labels))
-    .when(inline, (el) => el.child(div().relative().child(text).child(div().absolute().top(7).right(7)
-      .on_size_change((size, cx) => {
-        const w = size.width / zoom();
-        if (Math.abs(w - (box.actionsW ?? 0)) < 1) return;
-        box.actionsW = w;
-        cx.notify(box.part);
-      })
-      .child(actions(panel, box, t)))))
-    .when(!inline, (el) => el.child(text).when(Boolean(files), (f) => f.child(files)).child(h_flex().relative().h(BAR_H).items_center()
-      .child(hiddenBar ? div().flex_1() : formattingBar(panel, box, t))
-      .child(div().pr(7).flex_none().child(actions(panel, box, t)))))
-    // Last, so it paints over the text box's own background.
-    .when(eye, (el) => el.child(div().absolute().top(7).right(7).child(iconButton(`preview-${box.name}`, t, "eye-outline",
-      tooltip("Show/Hide Preview", "Ctrl+Alt+P"), (_e, cx) => togglePreview(panel, box, cx), { active: box.preview }))));
+    .when(Boolean(files), (el) => el.child(files))
+    .child(bar);
   if (box.edit) {
-    return v_flex().pt(8).font_family(FONT).child(frame)
+    return v_flex().pt(6).font_family(FONT).child(frame)
       .when(Boolean(error), (el) => el.child(div().pt(4).text_size(12).text_color(t.blocked).child(error)))
       .children(footer);
   }
-  return v_flex().flex_none().px(edge ? 0 : box.rhs ? 16 : 24).pt(box.rhs ? 12 : 0).font_family(FONT)
-    .child(frame)
-    .when(!edge || Boolean(error), (el) => el.child(div().h(24).flex_none().px(edge ? 16 : 0).pt(4).text_size(12).truncate().text_color(t.blocked).child(error ?? "")));
+  return v_flex().flex_none().font_family(FONT)
+    .when(Boolean(error), (el) => el.child(div().px(12).py(4).text_size(12).truncate().border_t_1().border_color(t.border).text_color(t.blocked).child(error)))
+    .child(frame);
 }

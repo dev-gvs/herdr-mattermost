@@ -5,8 +5,7 @@
 import { svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { props, shared, setShared, run, panes, focused, layout, openOverlay, closeOverlay } from "herdr";
-import { alpha, panelRequestKey, requestKey } from "../main.js";
-import { NO_FILTERS, FILTERS_W, FILTERS_SPARE, filtersFromProps, filtersToProps, filtersHeight, countMentionFilters } from "./mentions.js";
+import { panelRequestKey, requestKey } from "../main.js";
 
 export const EXPAND_TIP = "Expand the right sidebar  Ctrl+Shift+.";
 export const COLLAPSE_TIP = "Collapse the right sidebar  Ctrl+Shift+.";
@@ -31,11 +30,7 @@ export function openPopout(panel, spec, cx) {
   const popped = { ...spec, demo: panel.cfg?.demo };
   const name = popoutName(popped);
   const open = panel.popouts.get(name);
-  if (open && panes().some((p) => p.pane === open)) {
-    // Mattermost reuses the window and shows in it what was asked for now.
-    if (popped.popout === "mentions") setShared(`${panelRequestKey()}.${name}`, { id: `${Date.now()}-${Math.random()}`, action: "mention-filters", filters: { ...NO_FILTERS, ...filtersFromProps(popped) }, team: popped.mentionTeam ?? null });
-    return run("pane.focus", { pane: open });
-  }
+  if (open && panes().some((p) => p.pane === open)) return run("pane.focus", { pane: open });
   if (panel.splitting) return;
   if (focused()?.pane && showsPanes(layout())) {
     const before = new Set(panes().map((p) => p.pane));
@@ -53,21 +48,14 @@ export function openPopout(panel, spec, cx) {
 }
 
 // What's showing, in the props that bring it back the same way.
-export function currentPopout(panel, c) {
-  const kind = panel.rhs;
+export function currentPopout(panel, c, kind = panel.rhs) {
   if (kind === "thread") return { popout: kind, thread: panel.rhsThread };
-  if (kind === "mentions") return { popout: kind, ...filtersToProps(panel.mentionFilters), ...(panel.mentionTeam ? { mentionTeam: panel.mentionTeam } : {}) };
-  if (kind === "saved") return { popout: kind };
   return { popout: kind, channel: c?.name };
 }
 
 export async function loadPopout(panel, cx) {
   const p = props(), kind = p.popout;
   if (kind === "thread") return panel.openReply(p.thread, cx);
-  if (kind === "mentions") {
-    panel.mentionFilters = { ...NO_FILTERS, ...filtersFromProps(p) };
-    panel.mentionTeam = typeof p.mentionTeam === "string" ? p.mentionTeam : null;
-  }
   if (kind === "pinned" || kind === "files") panel.selected = [...panel.channels.values()].find((c) => c.name === p.channel)?.id ?? null;
   panel.rhs = kind;
   panel.redraw(cx);
@@ -156,15 +144,15 @@ export function shrinkOnPress(panel, e, cx) {
   panel.redraw(cx);
 }
 
-// Mattermost's SearchResultsHeader and RhsHeaderPost, each in its own order.
-export function rhsButtons(panel, t, c, thread) {
+// Mattermost's RhsHeaderPost and its other side views' headers, each in its own order.
+export function rhsButtons(panel, t, c, thread, kind = panel.rhs) {
   const button = (id, tip, name, onClick, on = false) => panel.headerButton(id, t, on, tip, onClick, icon(name));
   const expanded = panel.rhsExpanded;
   const expand = button("rhs-expand", expanded ? COLLAPSE_TIP : EXPAND_TIP, expanded ? "arrow-collapse" : "arrow-expand", (_e, cx) => {
     panel.rhsExpanded = !expanded;
     panel.redraw(cx);
   });
-  const popout = button("rhs-popout", POPOUT_TIP, "dock-window", (_e, cx) => openPopout(panel, currentPopout(panel, c), cx));
+  const popout = button("rhs-popout", POPOUT_TIP, "dock-window", (_e, cx) => openPopout(panel, currentPopout(panel, c, kind), cx));
   const close = (handler) => button("rhs-close", "Close", "x", handler);
   const closing = (_e, cx) => {
     panel.rhsLast = { rhs: panel.rhs, from: panel.rhsFrom, thread: panel.rhsThread };
@@ -173,16 +161,16 @@ export function rhsButtons(panel, t, c, thread) {
     panel.redraw(cx);
   };
   if (isPopout()) {
-    const following = panel.rhs === "thread" ? panel.following.get(panel.rhsThread) : undefined;
+    const following = kind === "thread" ? panel.following.get(panel.rhsThread) : undefined;
     return [
       ...(following !== undefined && thread?.length ? [panel.followButton(thread[0], following, t, "rhs-follow")] : []),
-      ...(panel.rhs === "thread" && thread?.length ? [panel.threadMenuButton(t, "rhs-menu", panel.rhsThread, thread, following)] : []),
+      ...(kind === "thread" && thread?.length ? [panel.threadMenuButton(t, "rhs-menu", panel.rhsThread, thread, following)] : []),
       button("rhs-close", "Close", "x", () => closePopout()),
     ];
   }
   // Over the messages it already has their width, as on Mattermost's small screens.
   const canExpand = panel.rhsBeside();
-  if (panel.rhs === "thread") {
+  if (kind === "thread") {
     const following = panel.following.get(panel.rhsThread);
     return [
       ...(following !== undefined && thread?.length ? [button("rhs-follow", following ? "Following" : "Follow", following ? "bell" : "bell-off", (_e, cx) => panel.toggleFollow(thread[0], cx), following)] : []),
@@ -191,85 +179,8 @@ export function rhsButtons(panel, t, c, thread) {
       close(closing),
     ];
   }
-  if (panel.rhs === "info" || panel.rhs === "members") return [close(closing)];
-  return [...(canExpand && panel.rhsFrom !== "info" ? [expand] : []), popout, close(closing)];
+  if (kind === "info" || kind === "members") return [close(closing)];
+  return [...(canExpand ? [expand] : []), popout, close(closing)];
 }
 
-export const BACK_TIPS = { mentions: "Back to search results", saved: "Back to saved messages", pinned: "Back to pinned messages" };
-
-// Compass's small quaternary button, in the position and padding the mention filters give it.
-export function filtersButton(panel, t) {
-  const count = countMentionFilters(panel.mentionFilters, panel.mentionTeam);
-  const open = Boolean(panel.filtersOpen);
-  // Mattermost has 12 of padding and 8 of gap in a panel 400 wide; this one starts at 293 of these units.
-  return h_flex().id("rhs-filters").flex_none().ml(-2).h(28).px(8).gap(6).items_center().rounded(4).cursor_pointer()
-    .text_size(12).line_height("16px").font_semibold().text_color(t.accent)
-    .when(open, (el) => el.bg(alpha(t.accent, 0.12)))
-    .hover((s) => s.bg(alpha(t.accent, open ? 0.12 : 0.08)))
-    .on_mouse_down("left", (e, cx) => {
-      cx.stop_propagation();
-      openFilters(panel, e.bounds ?? { ...e.position, width: 0, height: 0 }, cx);
-    })
-    .child(icon("filter-variant", 12))
-    .child(count > 0 ? `Filters (${count})` : "Filters");
-}
-
-// Group mentions need custom groups or an LDAP groups license: without either there are no group keys,
-// and the option could only narrow the list to nothing.
-async function groupMentionsAvailable(panel, cx) {
-  if (panel.clientConfig?.EnableCustomGroups === "true") return true;
-  const dir = panel.directory;
-  dir.license ??= await panel.api(cx, "/license/client?format=old").catch(() => ({}));
-  return dir.license.IsLicensed === "true" && dir.license.LDAPGroups === "true";
-}
-
-// The team's channels sorted by name, then the conversations that belong to no team, whichever team is chosen.
-async function filterableChannels(panel, cx) {
-  const list = [...panel.filterable.values()].filter((c) => !c.delete_at);
-  const peers = list.filter((c) => c.type === "D").map((c) => panel.dmPeer(c)).filter((id) => !panel.users.has(id));
-  if (peers.length) await panel.fetchUsers(cx, peers);
-  const row = (c) => ({ id: c.id, label: panel.channelName(c), name: c.name, team: c.team_id ?? "" });
-  const byLabel = (a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase());
-  const rows = list.map(row);
-  return [...rows.filter((c) => c.team).sort(byLabel), ...rows.filter((c) => !c.team).sort(byLabel)];
-}
-
-// Mattermost's filterAndSortTeamsByDisplayName: the person's own team order, then by name.
-function sortedTeams(panel) {
-  const order = (panel.teamsOrder ?? "").split(",");
-  const rank = (t) => order.indexOf(t.id);
-  const own = panel.teams.filter((t) => rank(t) >= 0).sort((a, b) => rank(a) - rank(b));
-  const rest = panel.teams.filter((t) => rank(t) < 0).sort((a, b) => a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase()));
-  return [...own, ...rest].filter((t) => !t.delete_at && t.display_name != null);
-}
-
-function openFilters(panel, box, cx) {
-  // A press on the button while its popover is open is closing it, and which of the two arrives first varies.
-  if (panel.filtersOpen || Date.now() - (panel.filtersClosed ?? 0) < 250) return;
-  cx.spawn(async (cx) => {
-    const showTeams = panel.clientConfig?.EnableCrossTeamSearch === "true" && (panel.teams?.length ?? 0) > 1;
-    const groups = await groupMentionsAvailable(panel, cx);
-    if (showTeams) {
-      const all = await panel.api(cx, "/users/me/channels").catch(() => []);
-      for (const c of all) panel.filterable.set(c.id, c);
-    }
-    const channels = await filterableChannels(panel, cx);
-    const z = panel.zoom(), base = filtersHeight(showTeams, groups);
-    const y = panel.place(box, base * z, "below"), up = y < box.y;
-    const bottom = panel.box ? panel.box.y + panel.box.height : Infinity, right = panel.box ? panel.box.x + panel.box.width : Infinity;
-    const room = (bottom - y) / z;
-    const short = room < base && y <= 4 + (panel.box?.y ?? 0);
-    const height = up ? base : Math.min(base + FILTERS_SPARE, Math.max(short ? room : base, room));
-    const id = openOwnOverlay({
-      mod: "mattermost", kind: "popup", frame: "none", width: FILTERS_W, height, at: { x: Math.max(8, Math.min(box.x, right - FILTERS_W * z - 8)), y },
-      props: { demo: panel.cfg?.demo, filtersMenu: {
-        filters: panel.mentionFilters, team: panel.mentionTeam, showTeams, groups, height, up, short, channels,
-        teams: (panel.teams ? sortedTeams(panel) : []).map((t) => ({ id: t.id, label: t.display_name })),
-        teamNames: Object.fromEntries((panel.teams ?? []).map((t) => [t.id, t.display_name])),
-      } },
-    });
-    panel.popupOpened(id);
-    panel.filtersOpen = id;
-    cx.notify(panel.mainPart);
-  });
-}
+export const BACK_TIPS = { pinned: "Back to pinned messages" };
