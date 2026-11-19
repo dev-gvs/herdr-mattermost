@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, TextView, v_resizable, resizable_panel } from "gpui-base";
-import { appHome, home, exec, readTextFile, writeTextFile, theme, props, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, panes, spaces, window as appWindow } from "herdr";
+import { appHome, home, exec, readTextFile, writeTextFile, theme, props, layout, shared, setShared, closeOverlay, settings, nextCommand, notify, hc, run as command, terminals, panes, spaces, window as appWindow } from "herdr";
 import { WebSocket } from "websocket";
 import { Media, openExternally, playExternally } from "./src/media.js";
 import { postFiles, postAttachments, postEmbeds, remoteImage } from "./src/attach.js";
@@ -20,7 +20,7 @@ import { ResetStatusDialog, RESET_W, resetHeight, resetCheck, answerReset, statu
 import { openOwnOverlay as openOverlay, isPopout, popoutName, openPopout, loadPopout, handDrafts, takeDrafts, toPanel, isExpandKey, rhsExpandKey, shrinkOnPress, rhsButtons, BACK_TIPS, POPOUT_TIP } from "./src/rhs.js";
 import { demoApi, demoStatus, DEMO } from "./demo/demo.js";
 import { Find } from "./src/find.js";
-import { modeOf, listWidth, contextBeside, CONTEXT_W, sectionTabs, rail, strip, listRow, scrollList, iconTile, iconButton as barButton, button, header, headerNote, empty, nothingPicked, shortTime,
+import { foldedRail, UNFOLD_W, modeOf, listWidth, contextBeside, CONTEXT_W, sectionTabs, rail, strip, listRow, scrollList, iconTile, iconButton as barButton, button, header, headerNote, empty, nothingPicked, shortTime,
   draftsList, draftReader, meList, meReader, SECTIONS, VIOLET, AMBER, countBadge } from "./src/layout.js";
 import { JIRA, jiraFor } from "./src/jira.js";
 
@@ -2651,9 +2651,13 @@ export default class Mattermost extends View {
   // A section's count on its tab: mentions and unread threads in red, which want you; Jira's Direct and drafts in blue.
   sectionBadge(key) {
     if (key === "chats") {
-      let mentions = 0;
-      for (const c of this.channels.values()) mentions += this.unread(c).mentions ?? 0;
-      return { count: mentions, red: true };
+      let mentions = 0, dot = false;
+      for (const c of this.channels.values()) {
+        const u = this.unread(c);
+        mentions += u.mentions ?? 0;
+        if (u.count > 0) dot = true;
+      }
+      return { count: mentions, red: true, dot };
     }
     if (key === "threads") return { count: this.threadTotals.total_unread_threads ?? 0, red: true };
     if (key === "jira") return { count: this.jira?.counts().direct ?? 0, red: false };
@@ -2679,8 +2683,17 @@ export default class Mattermost extends View {
     this.redraw(cx);
   }
 
+  // Herdr sizes the block, not the panel, so the panel finds the layout block it sits in. In a tab there's none.
+  unfold(key, cx) {
+    this.showSection(key, cx);
+    const find = (node) => node?.content?.mod === "mattermost" ? node : (node?.children ?? []).map(find).find(Boolean);
+    const block = find(layout());
+    if (block?.id) command("layout.resize", { id: block.id, px: UNFOLD_W });
+  }
+
   columns(t) {
     const mode = this.mode(), w = this.units();
+    if (mode === "r") return foldedRail(this, t);
     const banner = !this.live && this.wsError && !this.bannerHidden
       ? [h_flex().h(26).flex_none().px(11).gap(8).items_center().bg(alpha(AMBER, 0.14)).text_size(12).text_color(AMBER)
         .child(svg("mods/mattermost/icons/info.svg").size(13).flex_none())

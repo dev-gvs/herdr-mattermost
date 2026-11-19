@@ -16,7 +16,8 @@ The panel follows the Herdr theme. Its tokens map onto the design's roles: `back
   - A Connect button in `accent`, a `muted` note that an admin has to turn tokens on (System Console → Integrations → Integration Management) and allow the account to create them, and in `dim` where the login is saved. Errors show under the button in `blocked`.
   - When the account is in more than one team, the form becomes a list of its teams (display name, with the URL name in `dim`) and a Back button.
 - **Sections**: Find, Chats, Threads, Jira (only with the `jira` prop), Drafts and You. Each is a list and a reader: the list picks what the reader shows. The open section is remembered in `localStorage`.
-- **Three widths**, measured in layout units (window pixels over Herdr's zoom):
+- **Four widths**, measured in layout units (window pixels over Herdr's zoom):
+  - **Folded, under 160**: only the section icons, 17px in 40×38 cells down the left, none of them picked. A section's red or blue count sits on its icon's top right as in the tab bar, and Chats with unread messages but no mentions gets a 7px `accent` dot there. A click opens that section and resizes the block holding the panel to 420 units. For it to fold, the layout block's `min` has to allow it (52 fits the icons).
   - **Narrow, under 620**: a 44px tab bar along the top, each tab a 16px icon over its 11px label, then the list stacked over the reader with a draggable divider between them (the list starts at 460 units, at most the height less 300, and can be dragged between 110 and that).
   - **Medium, 620 to 1499**: a 38px bar of icon-only tabs (the name in a tooltip) over the list, and the reader beside the list. The list is 30% of the width, at least 280 and at most 360.
   - **Full, 1500 and up**: a 220px rail on the left with icons and names, a 400px list and the reader. The rail ends in a 42px You row: your avatar with its status, your name and your custom status emoji.
@@ -206,6 +207,7 @@ The panel follows the Herdr theme. Its tokens map onto the design's roles: `back
 
 ## Watch out
 
+- **Folding**: Herdr sizes layout blocks, not mods, so the folded rail finds its block in `layout()` (the first node whose `content.mod` is `mattermost`) and calls `layout.resize {id, px: 420}`. In a tab there's no such block, and a click only switches the section.
 - **It reaches the network, runs `curl` and reads files outside its folder.**
   - The token goes only to your Mattermost server: the API, the websocket, and the `curl` downloads of its own images.
   - Webhook icons, images in messages and link preview pictures are fetched without the token, and only those downloads follow redirects, so the token never travels with one. The exception is the server's own image proxy (`<server>/api/v4/image?url=`), which wants a session, so it gets the token and no redirects. Any other full URL goes out without the token, even one on your own host, since whoever wrote the message chose it. Fetching them shows those hosts your address, as a browser would. Only `http(s)` URLs from a message are ever fetched, and only `http(s)` and `mailto` links open.
@@ -287,6 +289,7 @@ The panel follows the Herdr theme. Its tokens map onto the design's roles: `back
 ## Done when
 
 - `herdr-app check ~/.config/herdr-app/mods/mattermost` passes.
+- In a row layout with the panel's block at `min` 52 and 100 wide, the panel shows only the section icons with their badges; a click on Threads widens the block to 420 and shows Threads in the narrow layout.
 - With `props: { demo: true }` the panel shows the Acme team in Chats: All Chats, Favorites, Channels (1) and Direct Messages (1) on the strip, rows with previews, a dot on the group of 3 and a red 1 on releases, and engineering with a saved bot post, reactions, a code block and two thread footers. Channels on the strip leaves the reader as it was.
 - With no `mattermost.json`, the panel shows the setup form. A wrong token says the server didn't accept it; the right one writes the file with mode `600` and Chats appears without reopening the panel.
 - With a real login, the Chats strip and rows match the web app's categories, order and unread state. A message sent from the web app appears within a second, in the reader and in its row's preview, and your reactions show `accent`.

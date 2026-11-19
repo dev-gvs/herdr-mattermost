@@ -7,7 +7,9 @@ import { v_flex, h_flex } from "gpui-base";
 import { settings } from "herdr";
 import { alpha, clock, MONTHS } from "../main.js";
 
-export const NARROW = 620, FULL = 1500;
+export const RAIL = 160, NARROW = 620, FULL = 1500;
+// The width a click on the folded rail opens the panel to: the chat block's smallest size before it could fold.
+export const UNFOLD_W = 420;
 export const CONTEXT_W = { m: 360, f: 460 };
 const READER_MIN = 420;
 export const ROW_H = 56;
@@ -34,7 +36,7 @@ export const SECTIONS = [
 const zoom = () => Number(settings()?.zoom) || 1;
 const icon = (name, size = 16) => svg(`mods/mattermost/icons/${name}.svg`).size(size).flex_none();
 
-export const modeOf = (w) => (w < NARROW ? "n" : w < FULL ? "m" : "f");
+export const modeOf = (w) => (w < RAIL ? "r" : w < NARROW ? "n" : w < FULL ? "m" : "f");
 export const listWidth = (mode, w) => (mode === "f" ? 400 : Math.round(Math.max(280, Math.min(360, w * 0.3))));
 // A thread or details sit beside the reader while it keeps room to read, and replace it otherwise.
 export const contextBeside = (mode, w) => mode === "f" || (mode === "m" && w - listWidth(mode, w) - CONTEXT_W.m >= READER_MIN);
@@ -139,6 +141,22 @@ export function sectionTabs(panel, t, mode) {
         .when(on, (el) => el.child(div().absolute().left(0).right(0).bottom(0).h(2).bg(t.accent)))
         .when(n.count > 0, (el) => el.child(h_flex().absolute().top(3).left(0).right(0)
           .child(div().flex_1()).child(h_flex().flex_1().pl(11).child(countBadge(n.count, t, n.red, true)))));
+    }));
+}
+
+// The folded panel: the section icons in a column with nothing picked, so a badge or dot is all that's left to
+// say something new arrived. A click opens the panel on that section.
+export function foldedRail(panel, t) {
+  return v_flex().size_full().py(6).gap(2).items_center()
+    .children(panel.sections().map(([key, label, name]) => {
+      const n = panel.sectionBadge(key);
+      return div().id(`fold-${key}`).relative().w(40).h(38).flex_none().flex().items_center().justify_center().rounded(7).cursor_pointer()
+        .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(label)
+        .on_click((_e, cx) => panel.unfold(key, cx))
+        .child(icon(name, 17))
+        .when(n.count > 0, (el) => el.child(div().absolute().top(2).left(20).child(countBadge(n.count, t, n.red, true))))
+        .when(!(n.count > 0) && Boolean(n.dot), (el) => el.child(div().absolute().top(8).left(25).child(unreadDot(t))));
     }));
 }
 
