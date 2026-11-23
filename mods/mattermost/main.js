@@ -3306,7 +3306,7 @@ export default class Mattermost extends View {
         built++;
         if (gap) out.push(div().h(gap).flex_none());
         gap = 0;
-        out.push(div().id(`row-${rowKey}`).on_size_change((size) => { sc.heights.set(rowKey, size.height / this.zoom()); }).child(build()));
+        out.push(div().id(`row-${rowKey}`).on_size_change((size, cx) => this.rowMeasured(sc, rowKey, size, cx)).child(build()));
       }
       from += h;
     }
@@ -3328,6 +3328,21 @@ export default class Mattermost extends View {
       })
       .on_scroll_wheel((e, cx) => this.scrollBy(e.delta.y, cx, sc, top))
       .child(top ? content.top(-sc.offset) : content.bottom(-sc.offset));
+  }
+
+  // Which rows got built was decided from the old heights, so a row that changed height leaves the spacers wrong
+  // until something renders again. After unfolding, rows are first drawn at the folded width, tall from wrapping,
+  // and once they shrink only the last few stay built above a blank spacer.
+  rowMeasured(sc, rowKey, size, cx) {
+    const h = size.height / this.zoom();
+    const changed = Math.abs((sc.heights.get(rowKey) ?? EST_ROW) - h) >= 1;
+    sc.heights.set(rowKey, h);
+    if (!changed || this.remeasured) return;
+    this.remeasured = true;
+    cx.timer.after(0, (cx) => {
+      this.remeasured = false;
+      cx.notify(this.mainPart);
+    });
   }
 
   // Centers the row `sc.aim` names. Rows out of view keep their height from one render to the next, so this
