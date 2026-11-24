@@ -385,6 +385,7 @@ export default class Mattermost extends View {
     this.wantedPreviews = new Set();
     this.jira = this.solo ? null : jiraFor(this, cx);
     this.thread = null;
+    this.missed = new Set();
     this.live = false;
     this.busy = 0;
     this.unreadMemo = new Map();
@@ -680,6 +681,7 @@ export default class Mattermost extends View {
     cx.notify();
     if (this.sidePart) {
       this.bindDrafts(cx);
+      this.readMissed(cx);
       this.warm();
       cx.notify(this.sidePart);
       cx.notify(this.mainPart);
@@ -1315,7 +1317,7 @@ export default class Mattermost extends View {
     Object.assign(this, {
       autoResetPref: "",
       me: null, team: null, teams: null, clientConfig: null, selected: null, thread: null, rhs: null, rhsFrom: null, rhsThread: null, rows: null, error: null,
-      rhsExpanded: false, rhsLast: null, section: "chats", thread: null, draftSel: null, previews: new Map(), wantedPreviews: new Set(),
+      rhsExpanded: false, rhsLast: null, section: "chats", thread: null, missed: new Set(), draftSel: null, previews: new Map(), wantedPreviews: new Set(),
       opening: null, editing: null, detached: null, highlighted: null, live: false, wsError: null, recentStatuses: [], dndEnd: 0,
       categories: [], threads: { all: null, unread: null }, threadTotals: { total_unread_threads: 0, total_unread_mentions: 0 }, draftsTouched: false,
       channels: new Map(), members: new Map(), users: new Map(), byUsername: new Map(), posts: new Map(), threadPosts: new Map(), statuses: new Map(), gmMembers: new Map(),
@@ -1786,10 +1788,7 @@ export default class Mattermost extends View {
       ? mentioned || (ids("followers").includes(this.me.id) && this.me.notify_props?.desktop_threads === "all")
       : mentioned || level === "all";
     if (!wanted) return;
-    const reading = this.mainKind() === "chat";
-    const looking = reply
-      ? (this.mainKind() === "thread" && this.thread === post.root_id) || (reading && this.rhs === "thread" && this.rhsThread === post.root_id)
-      : reading && this.selected === c.id;
+    const looking = reply ? this.showsThread(post.root_id) : !this.folded && this.mainKind() === "chat" && this.selected === c.id;
     if (looking && appWindow().active) return;
     const author = this.authorName(post);
     const text = notificationText(post.message) || (postFileIds(post).length ? "sent an attachment" : "");
@@ -1829,6 +1828,7 @@ export default class Mattermost extends View {
   }
 
   async markThreadRead(cx, id) {
+    this.missed.delete(id);
     for (const list of Object.values(this.threads)) {
       const th = list?.find((x) => x.id === id);
       if (th) Object.assign(th, { unread_replies: 0, unread_mentions: 0, last_viewed_at: Date.now() });
@@ -2111,6 +2111,22 @@ export default class Mattermost extends View {
       .child(composerView(this, box, t, { placeholder: "Edit the post...", error: box.error, files: filePreviews(this, box, t), footer }));
   }
 
+  // A folded panel or another section keeps its thread selected without showing it, so replies there
+  // still notify and stay unread until it is on screen again.
+  showsThread(id) {
+    if (this.folded) return false;
+    const kind = this.mainKind();
+    return (kind === "thread" && this.thread === id) || (this.rhs === "thread" && this.rhsThread === id && (kind === "chat" || this.solo));
+  }
+
+  readMissed(cx) {
+    for (const id of this.missed) {
+      if (!this.showsThread(id)) continue;
+      this.missed.delete(id);
+      cx.spawn(async (cx) => this.markThreadRead(cx, id));
+    }
+  }
+
   closeThread() {
     this.thread = null;
     this.resetScroll();
@@ -2276,8 +2292,10 @@ export default class Mattermost extends View {
           if (thread) {
             thread.push(post);
             if (thread[0]) thread[0].reply_count = (thread[0].reply_count ?? 0) + 1;
-            const open = this.thread === post.root_id || (this.rhs === "thread" && this.rhsThread === post.root_id);
-            if (open && post.user_id !== this.me.id) await this.markThreadRead(cx, post.root_id);
+            if (post.user_id !== this.me.id) {
+              if (this.showsThread(post.root_id)) await this.markThreadRead(cx, post.root_id);
+              else this.missed.add(post.root_id);
+            }
           }
         }
         const m = this.members.get(c.id);

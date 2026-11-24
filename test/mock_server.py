@@ -25,6 +25,8 @@ STATE = {
     "jira": [],
     # Drafts as the web app would leave them, files on the server by id, and bytes a second for uploads, to watch one go up.
     "drafts": [], "files": {}, "upload_rate": 0,
+    # Root post ids of the threads you follow, for the Threads section.
+    "threads": [],
 }
 JIRA_AUTH = "Basic " + base64.b64encode(b"sam@x.example:fake-jira-token").decode()
 JIRA_ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../mods/mattermost/demo/jira")
@@ -238,7 +240,10 @@ class H(BaseHTTPRequestHandler):
         if p == "/groups": return self.send([g for g in STATE["groups"]] if q.get("filter_has_member") == [ME] else [])
         if p == "/teams/t1/groups": return self.send({"groups": [g for g in STATE["groups"] if g["name"] == "ldapers"], "total_group_count": 1})
         if p == "/teams/t1/groups_by_channels": return self.send({"groups": STATE["channel_groups"]})
-        if re.fullmatch(rf"/users/{ME}/teams/t1/threads", p): return self.send({"threads": [], "total": 0, "total_unread_threads": 0, "total_unread_mentions": 0})
+        if re.fullmatch(rf"/users/{ME}/teams/t1/threads", p):
+            roots = {x["id"]: x for x in CHANNEL_POSTS + TOWN}
+            ths = [{"id": i, "post": roots[i], "reply_count": 1, "last_reply_at": NOW, "participants": [OTHER], "is_following": True, "unread_replies": 0, "unread_mentions": 0} for i in STATE["threads"]]
+            return self.send({"threads": ths, "total": len(ths), "total_unread_threads": 0, "total_unread_mentions": 0})
         if p == "/users/me/teams/t1/drafts": return self.send(STATE["drafts"])
         if p == "/teams/t1/posts/search" and method == "POST": return self.send({**plist(POSTS if body["page"] == 0 else []), "matches": {}})
         if p == f"/users/{ME}/posts/flagged": return self.send(plist(POSTS[:1]))
