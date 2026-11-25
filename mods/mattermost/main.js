@@ -2618,6 +2618,12 @@ export default class Mattermost extends View {
         this.setHover(on, cx);
       })
       .on_hover((on, cx) => { if (!on) this.setHover(null, cx); })
+      .on_mouse_down("back", (e, cx) => {
+        const back = this.rhs ? this.rhsBack(this.rhsCovers() || this.solo) : null;
+        if (!back) return;
+        cx.stop_propagation();
+        back(e, cx);
+      })
       .when(!this.solo, (el) => el.on_key_down((e, cx) => {
         if (this.jira?.onKey(e, cx)) return;
         if (isExpandKey(e.keystroke)) rhsExpandKey(this, cx);
@@ -3540,17 +3546,23 @@ export default class Mattermost extends View {
 
   // A thread or the conversation's details, beside the messages or in their place. Info, Members, Pinned and Files
   // are tabs of one panel. `kind` is what shows when nothing was asked for, the full panel's details.
-  rhsView(t, c, replacing, kind = this.rhs) {
-    const thread = kind === "thread" ? this.threadPosts.get(this.rhsThread) : null;
-    if (kind === "thread") c = this.channelOf(thread?.[0]?.channel_id) ?? c;
-    const asked = Boolean(this.rhs);
-    const close = (_e, cx) => { this.rhs = null; this.rhsFrom = null; this.redraw(cx); };
-    const back = this.rhsFrom ? (_e, cx) => {
+  // The same step the panel's back button takes, or null when it shows none; the mouse's back button uses it too.
+  rhsBack(replacing) {
+    if (this.rhsFrom) return (_e, cx) => {
       this.rhs = this.rhsFrom;
       this.rhsFrom = null;
       this.redraw(cx);
       this.loadRhs(cx);
-    } : replacing && !this.solo ? close : null;
+    };
+    if (replacing && !this.solo) return (_e, cx) => { this.rhs = null; this.rhsFrom = null; this.redraw(cx); };
+    return null;
+  }
+
+  rhsView(t, c, replacing, kind = this.rhs) {
+    const thread = kind === "thread" ? this.threadPosts.get(this.rhsThread) : null;
+    if (kind === "thread") c = this.channelOf(thread?.[0]?.channel_id) ?? c;
+    const asked = Boolean(this.rhs);
+    const back = this.rhsBack(replacing);
     // A floating popped-out copy moves by any press that isn't stopped, and its header is what's left for that.
     const stopPress = (_e, cx) => cx.stop_propagation();
     const tab = (k, label) => div().id(`rhs-tab-${k}`).px(9).h(26).flex().flex_none().items_center().rounded(5).cursor_pointer().text_size(12)
