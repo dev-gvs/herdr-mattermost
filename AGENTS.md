@@ -78,18 +78,20 @@ test/sandbox.sh stop
 
 ### Demo videos for the repo
 
-`docs/demo.mp4` and `docs/demo-jira.mp4` are the README's videos. They come from the sandbox's demo data, so leave `demo/demo.js` in the repo alone. `test/record.sh` grabs screenshots while the steps run, then encodes them.
+`docs/demo.mp4` and `docs/demo-jira.mp4` are the README's videos. They come from the sandbox's demo data, so leave `demo/demo.js` in the repo alone. `test/record.sh` makes one from scratch: it starts a fresh sandbox at 2560x1640 with twice the zoom, so zoomed-in text stays sharp, patches the sandbox's copy of the mod, drives the panel one step at a time with a still after each, then renders the video with an eased camera, a drawn pointer and click ripples.
 
 ```sh
-test/sandbox.sh restart demo                       # Or demo-jira. Fresh state each time.
-test/record.sh docs/demo.mp4 at:1236,779 click sleep:1 at:200,130 click sleep:2   # Steps as for `sandbox.sh in`. The first two close the "Updated to" toast.
+test/record.sh demo docs/demo.mp4                  # Or demo-jira docs/demo-jira.mp4. About a minute each.
+RENDER_ONLY=1 test/record.sh demo docs/demo.mp4    # Renders the last recording in /var/tmp/mmt-rec again, e.g. after changing the look.
+test/sandbox.sh stop
 ```
 
-- Park the pointer with `at:1000,20` before each shot, except for a shot of something that needs hovering.
-- In the sandbox copy of `demo/demo.js`, delete the posts holding `Not your name` and `someone who can't notify`, which only exercise highlighting, and move the posts you want to the end of `DESIGN`.
-- To leave other channels unread, write a layout file in `/var/tmp/mmt/app/layouts/` like the `demo` one, with `"channel": "engineering"`, and switch to it instead of clicking through channels.
+- The scenarios are the `demo` and `demo_jira` functions in `test/demo_video.py`. Coordinates are the usual 1280x820 ones. `move` glides the pointer, `click`'s `settle` is how long the UI gets before the still and `after` how long the video stays on it, and `camera(zoom, at=(x, y))` starts a zoom that plays alongside the next steps.
+- Check frames before replacing the videos: `ffmpeg -ss 5 -i docs/demo.mp4 -frames:v 1 /var/tmp/mmt-rec/f.png`, then look at the PNG.
+- Keep each file under about 2 MB. `CRF=24 test/record.sh ...` makes it smaller.
+- `prepare` in `demo_video.py` deletes the posts holding `Not your name` and `someone who can't notify`, which only exercise highlighting, and makes a sent post appear, which the demo can't do without a websocket. It stops with an error when the mod has changed so that a patch no longer applies.
+- The post sent in the thread doesn't show in the Threads tab's copy of that thread, which comes from the demo data. The SQL block in the migration thread renders tiny at the doubled zoom, so the scenario doesn't open that thread.
 - "Open in new tab" stays disabled until `test/sandbox.sh herdr do space.new '{"name":"t"}'`.
-- The caret blinks. Take the shot again if it shows.
 
 ### What this can't test
 

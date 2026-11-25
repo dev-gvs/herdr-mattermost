@@ -8,6 +8,7 @@ REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 BIN=$S/home/.local/bin
 SCREEN_W=${SCREEN_W:-1280}
 SCREEN_H=${SCREEN_H:-820}
+ZOOM=${ZOOM:-1.23}
 
 # env -i leaves out the real session's socket, display and token, so nothing in here can reach the live window.
 sandboxed() {
@@ -86,7 +87,7 @@ cmd_start() {
   cp -r "$REPO/mods/mattermost" "$S/app/mods/"
   local theme=$HOME/.config/herdr-app/themes/breeze.json
   [ -f "$theme" ] && cp "$theme" "$S/app/themes/"
-  echo '{ "zoom": 1.23, "font": "JetBrainsMono Nerd Font", "font_size": 14, "theme": "breeze" }' > "$S/app/settings.json"
+  echo "{ \"zoom\": $ZOOM, \"font\": \"JetBrainsMono Nerd Font\", \"font_size\": 14, \"theme\": \"breeze\" }" > "$S/app/settings.json"
   echo '{ "frame.welcomed": true }' > "$S/app/shared.json"
   # Maximized and without a title bar in the layouts below, so that screenshot pixels and pointer positions are the same numbers.
   echo "{ \"state\": \"maximized\", \"bounds\": [0.0, 0.0, $SCREEN_W.0, $SCREEN_H.0] }" > "$S/app/window.json"
