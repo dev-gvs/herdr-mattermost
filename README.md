@@ -2,7 +2,19 @@
 
 A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, as a reading pane: Find, Chats, Threads, Drafts and You (plus an optional Jira inbox), each a list with a reader beside it. A Collapse tab folds it to a column of section icons with their badges, and it fits a narrow side panel (list over reader), a medium pane (list beside reader) and a full window (a rail, the list, the reader and the conversation's details). Chats are filtered by your sidebar categories, and every row shows the latest message. Conversations are live, with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, inline editing, drafts, the post menu, your status and custom status, your profile, Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands), and a one-line message box with Mattermost's formatting shortcuts and file uploads. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
-![Mattermost in Herdr](preview.png)
+Two ways to run it, picked by the panel's props. Both videos use the built-in demo data.
+
+**Mattermost only** (the default):
+
+<video src="docs/demo.mp4" controls muted width="720"></video>
+
+[docs/demo.mp4](docs/demo.mp4) · layout props: `{ "mod": "mattermost" }`
+
+**With the Jira inbox**, which adds a Jira tab (see [Jira notifications](#jira-notifications-optional)):
+
+<video src="docs/demo-jira.mp4" controls muted width="720"></video>
+
+[docs/demo-jira.mp4](docs/demo-jira.mp4) · layout props: `{ "mod": "mattermost", "props": { "jira": { "site": "https://your-site.atlassian.net", "credentials": "~/.config/jira.conf" } } }`
 
 ## Install
 
@@ -107,8 +119,6 @@ The token is read from that file for each request and goes only to your Jira sit
 
 With the `jira` block, a link to an issue on that site shows in messages as Jira draws it: the type icon, the key and summary, and the status lozenge. A link inside code stays as typed, and an issue you can't see stays a plain link. Lines holding a card are drawn by the panel itself rather than as markdown, so their text can't be selected.
 
-![Jira notifications](screenshots/jira.png)
-
 ## Send a message to an agent (optional)
 
 With an `agent` block in the panel's props, a post's hover bar gets an outlined Claude Code mascot in violet that starts an agent in `folder`, in a new tab of the space for that folder: the one named after it, else the one whose folder it is, else a new one. The post's ⋯ menu has the same entry.
@@ -122,32 +132,6 @@ The first message goes to the agent on its command line, and each later one is t
 With [herdr-chat](https://github.com/ChmaraX/herdr-chat) installed, `"chat": "claude"` (or another of its providers) in the block opens a chat tab instead of a terminal. `argv` isn't used then, and `hc` isn't needed. The messages go to the chat as its `prompt` prop, which needs a herdr-chat that reads it; one that doesn't opens the chat empty. A second click shows the chat again, and after its tab was closed reopens it on the same session.
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
-
-## Screenshots
-
-A thread beside the channel:
-
-![A thread beside the channel](screenshots/thread.png)
-
-Threads:
-
-![Threads](screenshots/threads.png)
-
-Images, GIFs and files in messages:
-
-![Images, GIFs and files in messages](screenshots/media.png)
-
-The image viewer and its right-click menu:
-
-![The image viewer and its right-click menu](screenshots/image-viewer.png)
-
-Suggestions while typing:
-
-![Suggestions while typing](screenshots/suggestions.png)
-
-Profile:
-
-![Profile](screenshots/profile.png)
 
 ## License
 

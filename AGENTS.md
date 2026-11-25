@@ -76,14 +76,13 @@ test/sandbox.sh stop
 - Tabs need a space, and the `demo` and `server` layouts have none. To test them: `herdr do layout.switch '{"name":"main"}'`, `herdr do space.new '{"name":"t"}'`, then `herdr do tab.new '{"name":"mm","mod":"mattermost","props":{"demo":true,"channel":"design"}}'`.
 - A fresh start shows an "Updated to x.y.z" toast at the bottom right until it's closed or Herdr restarts. It's only the new home, and no update ran.
 
-### Screenshots for the repo
+### Demo videos for the repo
 
-`preview.png` and `screenshots/` come from the sandbox's demo. Use only demo data, and leave `demo/demo.js` in the repo alone.
+`docs/demo.mp4` and `docs/demo-jira.mp4` are the README's videos. They come from the sandbox's demo data, so leave `demo/demo.js` in the repo alone. `test/record.sh` grabs screenshots while the steps run, then encodes them.
 
 ```sh
-SCREEN_W=1450 SCREEN_H=905 test/sandbox.sh start demo
-test/sandbox.sh restart demo                       # Clears the "Updated to" toast.
-python3 test/frame_shot.py IN.png OUT.png          # Rounded corners and the unfocused border. Needs Pillow.
+test/sandbox.sh restart demo                       # Or demo-jira. Fresh state each time.
+test/record.sh docs/demo.mp4 at:1236,779 click sleep:1 at:200,130 click sleep:2   # Steps as for `sandbox.sh in`. The first two close the "Updated to" toast.
 ```
 
 - Park the pointer with `at:1000,20` before each shot, except for a shot of something that needs hovering.

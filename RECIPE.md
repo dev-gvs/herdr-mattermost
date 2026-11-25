@@ -2,8 +2,6 @@
 
 Your Mattermost team inside Herdr as a reading pane: Find, Chats, Threads, Drafts and You (and a Jira inbox), each a list beside a reader, laid out for a narrow side panel, a medium pane or a full window. Inside a conversation it's Mattermost: threads, reactions, the emoji picker, the post menu, files, suggestions, your status and profile. It stays live through Mattermost's websocket, so it sits beside your terminals and agents instead of in another window.
 
-![Mattermost](preview.png)
-
 This file is the brief: enough to build the Mattermost panel from an empty folder. The files next to it are one build of it. If they don't work on your Herdr, or you want it different, build it again from here.
 
 ## What you see
