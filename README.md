@@ -6,13 +6,13 @@ Two ways to run it, picked by the panel's props. Both videos use the built-in de
 
 **Mattermost only** (the default):
 
-<video src="docs/demo.mp4" controls muted width="720"></video>
+<video src="https://github.com/dev-gvs/herdr-mattermost/raw/main/docs/demo.mp4" controls muted width="100%"></video>
 
 [docs/demo.mp4](docs/demo.mp4) · layout props: `{ "mod": "mattermost" }`
 
 **With the Jira inbox**, which adds a Jira tab (see [Jira notifications](#jira-notifications-optional)):
 
-<video src="docs/demo-jira.mp4" controls muted width="720"></video>
+<video src="https://github.com/dev-gvs/herdr-mattermost/raw/main/docs/demo-jira.mp4" controls muted width="100%"></video>
 
 [docs/demo-jira.mp4](docs/demo-jira.mp4) · layout props: `{ "mod": "mattermost", "props": { "jira": { "site": "https://your-site.atlassian.net", "credentials": "~/.config/jira.conf" } } }`
 
