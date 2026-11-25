@@ -27,6 +27,8 @@ STATE = {
     "jira_hang": 0,
     # Drafts as the web app would leave them, files on the server by id, and bytes a second for uploads, to watch one go up.
     "drafts": [], "files": {}, "upload_rate": 0,
+    # Root post ids of the threads you follow, for the Threads section.
+    "threads": [],
 }
 JIRA_AUTH = "Basic " + base64.b64encode(b"sam@x.example:fake-jira-token").decode()
 JIRA_ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../mods/mattermost/demo/jira")
@@ -62,6 +64,8 @@ STATE["jira"] = [
      jira_note("j8", "watching", 50, False, "Bob C", "updated a page", SPEC, avatar=False)],
     [jira_note("j5", "direct", 3 * 24 * 60, True, "Ann B", "created a work item", {"key": "APP-2", "icon": "10318", "title": "Write the release notes", "status": "Backlog"})],
 ]
+JIRA_ISSUES = [{"key": w["key"], "where": w} for w in [BUG12, {"key": "BUG-9", "icon": "10318", "title": "Rotate the API keys", "status": "To Do"},
+                                                         {"key": "APP-3", "icon": "10315", "title": "Dark mode for settings", "status": "Done"}]]
 def jira_all(): return [n for g in STATE["jira"] for n in g]
 def jira_feed(pick):
     groups = sorted((g for g in STATE["jira"] if pick(g[0])), key=lambda g: g[0]["timestamp"], reverse=True)
@@ -194,6 +198,15 @@ class H(BaseHTTPRequestHandler):
                     if n["category"] == v.get("category"): n["readState"] = "read"
                 return self.send({"data": {"notifications": {"markNotificationsAsRead": "OK"}}})
             return self.send({"errors": [{"message": f"mock has no operation {op}"}]}, 400)
+        # An issue's fields, as Jira's REST API gives them to a smart link: only the issues the notifications name.
+        m = re.fullmatch(r"/rest/api/3/issue/([A-Z]+-\d+)", p)
+        if m:
+            if self.headers.get("Authorization") != JIRA_AUTH: return self.send({"message": "Unauthorized"}, 401)
+            where = next((n["where"] for n in JIRA_ISSUES if n["key"] == m[1]), None)
+            if not where: return self.send({"errorMessages": ["Issue does not exist or you do not have permission to see it."]}, 404)
+            cat = {"Done": "done", "To Do": "new", "Backlog": "new"}.get(where["status"], "indeterminate")
+            return self.send({"key": m[1], "fields": {"summary": where["title"], "status": {"name": where["status"], "statusCategory": {"key": cat}},
+                                                   "issuetype": {"name": "Bug" if where["icon"] == "10303" else "Task", "iconUrl": f"{J}/rest/api/2/universal_avatar/view/type/issuetype/avatar/{where['icon']}?size=medium"}}})
         m = re.fullmatch(r"/jira-avatars/(u-[a-z]+\.png)", p)
         if m:
             data = open(os.path.join(JIRA_ICONS, "../avatars", m[1]), "rb").read()
@@ -233,7 +246,10 @@ class H(BaseHTTPRequestHandler):
         if p == "/groups": return self.send([g for g in STATE["groups"]] if q.get("filter_has_member") == [ME] else [])
         if p == "/teams/t1/groups": return self.send({"groups": [g for g in STATE["groups"] if g["name"] == "ldapers"], "total_group_count": 1})
         if p == "/teams/t1/groups_by_channels": return self.send({"groups": STATE["channel_groups"]})
-        if re.fullmatch(rf"/users/{ME}/teams/t1/threads", p): return self.send({"threads": [], "total": 0, "total_unread_threads": 0, "total_unread_mentions": 0})
+        if re.fullmatch(rf"/users/{ME}/teams/t1/threads", p):
+            roots = {x["id"]: x for x in CHANNEL_POSTS + TOWN}
+            ths = [{"id": i, "post": roots[i], "reply_count": 1, "last_reply_at": NOW, "participants": [OTHER], "is_following": True, "unread_replies": 0, "unread_mentions": 0} for i in STATE["threads"]]
+            return self.send({"threads": ths, "total": len(ths), "total_unread_threads": 0, "total_unread_mentions": 0})
         if p == "/users/me/teams/t1/drafts": return self.send(STATE["drafts"])
         if p == "/teams/t1/posts/search" and method == "POST": return self.send({**plist(POSTS if body["page"] == 0 else []), "matches": {}})
         if p == f"/users/{ME}/posts/flagged": return self.send(plist(POSTS[:1]))

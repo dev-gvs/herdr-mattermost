@@ -1,36 +1,5 @@
-// What Mattermost's formatting bar does to the text: its apply_markdown.ts, the bar's layout modes and the
-// composer's shortcuts, ported as they are so the same press gives the same text and selection.
-
-export const MODES = ["bold", "italic", "strike", "heading", "link", "code", "quote", "ul", "ol"];
-
-export const CONTROLS = {
-  bold: { icon: "format-bold", tip: "Bold", keys: "Ctrl+B" },
-  italic: { icon: "format-italic", tip: "Italic", keys: "Ctrl+I" },
-  strike: { icon: "format-strikethrough-variant", tip: "Strikethrough", keys: "Shift+Alt+X" },
-  heading: { icon: "format-header", tip: "Heading" },
-  link: { icon: "link-variant", tip: "Link", keys: "Ctrl+Alt+K" },
-  code: { icon: "code-tags", tip: "Code", keys: "Ctrl+Alt+C" },
-  quote: { icon: "format-quote-open", tip: "Quote", keys: "Shift+Alt+9" },
-  ul: { icon: "format-list-bulleted", tip: "Bulleted List", keys: "Shift+Alt+8" },
-  ol: { icon: "format-list-numbered", tip: "Numbered List", keys: "Shift+Alt+7" },
-};
-
-export const tooltip = (tip, keys) => (keys ? `${tip}  ${keys}` : tip);
-
-// Widths are the bar's own, which spans the box under the actions on its right.
-const THRESHOLDS = { center: [[641, "wide"], [424, "normal"], [310, "narrow"]], rhs: [[620, "wide"], [460, "normal"], [340, "narrow"]] };
-const VISIBLE = { wide: 9, normal: 5, narrow: 2, min: 1 };
-
-export function layoutMode(width, rhs) {
-  for (const [min, mode] of THRESHOLDS[rhs ? "rhs" : "center"]) if (width >= min) return mode;
-  return "min";
-}
-
-// Center boxes fit one extra control before giving up a formatting one; the right-hand side fits none.
-export function splitControls(mode, extra, rhs) {
-  const count = mode === "wide" ? VISIBLE.wide : Math.max(0, VISIBLE[mode] - (rhs ? extra : Math.max(0, extra - 1)));
-  return { shown: MODES.slice(0, count), hidden: MODES.slice(count) };
-}
+// What Mattermost's formatting shortcuts do to the text: its apply_markdown.ts and the composer's key handler,
+// ported as they are so the same keys give the same text and selection.
 
 // What a key press in the composer asks for, by Mattermost's use_key_handler. Shift with a digit arrives as
 // the shifted character on most layouts, so both spellings count.
@@ -38,7 +7,7 @@ export function shortcut(keystroke) {
   const parts = keystroke.split("-"), key = parts.pop() || "-", mods = new Set(parts);
   const ctrl = mods.has("ctrl") || mods.has("cmd"), alt = mods.has("alt"), shift = mods.has("shift");
   if (ctrl && !alt && !shift) return { b: "bold", i: "italic", k: "link-selected", u: "attach" }[key] ?? null;
-  if (ctrl && alt && !shift) return { k: "link", c: "code", e: "emoji", t: "toggle", p: "preview" }[key] ?? null;
+  if (ctrl && alt && !shift) return { k: "link", c: "code", e: "emoji" }[key] ?? null;
   if (alt && !ctrl) return { x: "strike", 7: "ol", "&": "ol", 8: "ul", "*": "ul", 9: "quote", "(": "quote" }[key] ?? null;
   return null;
 }

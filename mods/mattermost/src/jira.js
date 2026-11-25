@@ -4,9 +4,9 @@ import { home, appHome, props, exec, readTextFile, writeTextFile, notify } from 
 import { alpha, openLink, sleep } from "../main.js";
 import { hash } from "./media.js";
 import { jiraDemo, JIRA_DEMO_SITE } from "../demo/jira.js";
+import { listRow, strip, empty, header, headerNote, button, iconButton, shortTime, scrollList, nothingPicked } from "./layout.js";
 
 export const JIRA = "jira";
-const ROW_PAD = 9;
 const PAGE = 50;
 // A connection can hang before TLS finishes while the next one goes straight through, so a quick retry beats a long
 // wait. Slow handshakes that do succeed take about 6 s.
@@ -23,12 +23,6 @@ const BLUE = ["#579dff", "#0c66e4"];
 const SWITCH = ["#94c748", "#6a9a23"];
 // Atlassian's colour for an avatar without a picture.
 const NAVY = "#172b4d";
-// Rows have no line clamp, so titles and comments are cut by an estimate of how many characters fit.
-const CHAR_W = 0.6;
-// Wrapping at word ends leaves part of each line empty.
-const WRAP_LOSS = 0.35;
-const TITLE_LINE = 20;
-const BODY_LINE = 20;
 
 // The gateway warns about unnamed operations. Every field here was checked against a real site.
 const ITEM = `fragment JiraItem on InfluentsNotificationItem {
@@ -61,6 +55,14 @@ const MARK = {
 };
 const READ_ALL = "mutation JiraReadAll($category: InfluentsNotificationCategory, $ari: String) { notifications { markNotificationsAsRead(category: $category, collabContextRoutingAri: $ari) } }";
 
+// How long a card on screen keeps its status before asking Jira again.
+const ISSUE_STALE = 10 * 60e3;
+// Jira's lozenge colours by status category, dark and light: [background, text].
+const LOZENGE = {
+  new: [["#a1bdd914", "#9fadbc"], ["#091e420f", "#44546f"]],
+  indeterminate: [["#09326c", "#85b8ff"], ["#e9f2ff", "#0055cc"]],
+  done: [["#164b35", "#7ee2b8"], ["#dcfff1", "#216e4e"]],
+};
 // Drawn when an item has no icon or it couldn't be fetched: Jira's own issue type colours.
 const TYPES = {
   bug: ["#e5493a", null],
@@ -156,6 +158,8 @@ function item(n, site) {
     title: c.entity?.title ?? "",
     icon: c.entity?.iconUrl ?? null,
     // A Jira issue's path is its key; a Confluence page's is its space, and a page has no status.
+    key: c.path?.[0]?.title || issueKey(c.entity?.url, url),
+    status: c.entity?.status ?? "",
     meta: [c.path?.[0]?.title || issueKey(c.entity?.url, url), c.entity?.status].filter(Boolean).join(" • "),
     page: /\/wiki\//.test(url),
     comment: /[?&]focusedCommentId=/.test(url),
@@ -174,6 +178,15 @@ function normalize(node, site) {
   return n;
 }
 
+// The list's own short form: minutes and hours, then the date as the other lists give it.
+function shortAgo(ms) {
+  const min = Math.floor((Date.now() - ms) / 60e3);
+  if (min < 1) return "now";
+  if (min < 60) return `${min}m`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)}h`;
+  return shortTime(ms);
+}
+
 function ago(ms) {
   const min = Math.floor((Date.now() - ms) / 60e3);
   if (min < 1) return "just now";
@@ -184,14 +197,6 @@ function ago(ms) {
   if (d < 14) return `${d} ${d === 1 ? "day" : "days"} ago`;
   const w = Math.floor(d / 7);
   return `${w} weeks ago`;
-}
-
-// Jira's bell has only these three.
-function dayLabel(ms) {
-  const d = new Date(ms), now = new Date();
-  if (d.toDateString() === now.toDateString()) return "Today";
-  if (d.toDateString() === new Date(now.getTime() - 86400e3).toDateString()) return "Yesterday";
-  return "Older";
 }
 
 // First and last word, as Atlassian's own initials pictures have them ("Automation for Jira" is AJ).
@@ -205,15 +210,6 @@ function dark(t) {
   if (!m) return true;
   const [r, g, b] = m.slice(1).map((x) => parseInt(x, 16));
   return 0.299 * r + 0.587 * g + 0.114 * b < 128;
-}
-
-// Cuts text to what `lines` lines of `width` px are likely to hold, ending in "…" as Jira does.
-function fit(text, width, lines, size) {
-  const max = Math.max(12, Math.floor((width / (size * CHAR_W)) * (lines - WRAP_LOSS)));
-  if ([...text].length <= max) return text;
-  const cut = [...text].slice(0, max - 1).join("");
-  const space = cut.lastIndexOf(" ");
-  return `${(space > max * 0.7 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 // Off unless the panel's props carry a `jira` block, so nobody else's panel changes.
@@ -242,13 +238,19 @@ export class JiraInbox {
     this.groups = new Map();
     // Icon URL to its cached file, or null when it can't be had.
     this.icons = new Map();
-    this.cursor = -1;
+    // The notification in the reader. Picking a tab leaves it there, so it's kept as an item, not a place in a list.
+    this.picked = null;
     this.error = null;
     this.loaded = false;
     this.misses = 0;
     this.seq = 0;
     // Direct ids already seen, so only new ones notify; null until the first load.
     this.seen = null;
+    // Issues linked in messages, by key: their card, null while it loads, false when it can't be had.
+    this.issues = new Map();
+    this.wantedIssues = new Set();
+    // Cards are asked for while drawing, where nothing can be fetched, so the fetch comes on the next tick.
+    cx.timer.every(250, (cx) => { if (this.wantedIssues.size && !this.fetchingIssues) cx.spawn(async (cx) => this.fetchIssues(cx)); });
     cx.timer.after(0, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
     cx.timer.every(POLL, (cx) => cx.spawn(async (cx) => this.refresh(cx)));
   }
@@ -302,6 +304,7 @@ export class JiraInbox {
   async refresh(cx) {
     const seq = ++this.seq;
     const all = !this.unreadOnly;
+    let answered = false;
     try {
       const after = new Date(Date.now() - DAYS * 86400e3).toISOString();
       const data = await this.gql(cx, "JiraFeed", FEED, { category: this.tab, after, all });
@@ -316,6 +319,7 @@ export class JiraInbox {
       this.more = { direct: more(feeds.direct), watching: more(feeds.watching), all: more(feeds.all) };
       this.error = null;
       this.misses = 0;
+      answered = true;
     } catch (e) {
       if (seq !== this.seq) return;
       const showing = this.loaded && (!all || this.all);
@@ -323,6 +327,10 @@ export class JiraInbox {
       if (!excused) this.error = String(e?.message ?? e);
     }
     this.loaded = true;
+    const fresh = this.find(this.picked?.id);
+    if (fresh) this.picked = fresh;
+    // A failed load says nothing about whether the item is gone.
+    else if (!this.picked || answered) this.picked = this.shown()[0] ?? null;
     this.view.redraw(cx);
     if (await this.fetchIcons(cx, [...this.unread.direct, ...this.unread.watching, ...(this.all ?? [])])) this.view.redraw(cx);
     if (!this.error && seq === this.seq) this.announce(this.unread.direct);
@@ -351,9 +359,17 @@ export class JiraInbox {
 
   // A click on a desktop notification: open it as a row click would, or just its link once it's left the list.
   openFromNotification(id, url, cx) {
-    const n = [...this.unread.direct, ...this.unread.watching, ...(this.all ?? [])].find((x) => x.id === id);
-    if (n) this.activate(n, cx);
-    else if (url) openLink(url);
+    const n = this.find(id);
+    if (n) {
+      this.picked = n;
+      this.activate(n, cx);
+    } else if (url) openLink(url);
+  }
+
+  find(id) {
+    if (!id) return null;
+    const groups = [...this.groups.values()].flatMap((items) => items ?? []);
+    return [...this.unread.direct, ...this.unread.watching, ...(this.all ?? []), ...this.kept.values(), ...groups].find((x) => x.id === id) ?? null;
   }
 
   // Issue type icons live on the Jira site behind the same login as the API, so they come down here, with the
@@ -386,6 +402,65 @@ export class JiraInbox {
     return got;
   }
 
+  keyOf(url) {
+    if (!url.toLowerCase().startsWith(`${this.cfg.site.toLowerCase()}/browse/`)) return null;
+    return /^\/browse\/([A-Z][A-Z0-9_]*-\d+)(?:[/?#]|$)/.exec(url.slice(this.cfg.site.length))?.[1] ?? null;
+  }
+
+  async fetchIssues(cx) {
+    this.fetchingIssues = true;
+    const keys = [...this.wantedIssues].slice(0, 8);
+    for (const key of keys) this.wantedIssues.delete(key);
+    try {
+      const auth = this.cfg.demo ? null : await this.authHeader().catch(() => null);
+      await Promise.all(keys.map(async (key) => {
+        const old = this.issues.get(key);
+        try {
+          if (!auth) throw new Error("no login");
+          const res = await Promise.race([
+            fetch(`${this.cfg.site}/rest/api/3/issue/${key}?fields=summary,status,issuetype`, { headers: { Authorization: auth, Accept: "application/json" } }),
+            sleep(cx, TIMEOUT).then(() => null),
+          ]);
+          if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+          const f = (await res.json())?.fields ?? {};
+          this.issues.set(key, {
+            at: Date.now(),
+            summary: f.summary ?? "",
+            status: f.status?.name ?? "",
+            category: f.status?.statusCategory?.key ?? "",
+            icon: f.issuetype?.iconUrl ?? null,
+            type: (f.issuetype?.name ?? "").toLowerCase().replace(/[^a-z]/g, ""),
+          });
+        } catch {
+          // A stale card beats a bare link when only the refresh failed.
+          this.issues.set(key, old ? { ...old, at: Date.now() } : false);
+        }
+      }));
+      await this.fetchIcons(cx, keys.map((k) => this.issues.get(k)).filter(Boolean));
+    } finally {
+      this.fetchingIssues = false;
+    }
+    this.view.redraw(cx);
+  }
+
+  // Jira's inline smart link: the type icon, "KEY: summary" as a link, and the status lozenge. Null when the
+  // issue can't be had, so the caller draws the plain link.
+  issueCard(id, key, t, open) {
+    const hit = this.issues.get(key);
+    if (hit === false) return null;
+    if (hit === undefined) this.issues.set(key, null);
+    if (!hit || Date.now() - hit.at > ISSUE_STALE) this.wantedIssues.add(key);
+    const title = hit ? `${key}: ${hit.summary}` : key;
+    const [bg, fg] = (LOZENGE[hit?.category] ?? LOZENGE.new)[dark(t) ? 0 : 1];
+    return h_flex().id(id).max_w_full().h(22).px(4).gap(4).items_center().rounded(4).border_1().border_color(alpha(t.foreground, 0.16))
+      .cursor_pointer().hover((s) => s.bg(alpha(t.foreground, 0.06)))
+      .tooltip(title)
+      .on_click((_e, cx) => open(cx))
+      .child(hit ? this.icon({ icon: hit.icon, type: hit.type }) : div().size(14).m(1).flex_none().rounded(3).bg(alpha(t.foreground, 0.12)))
+      .child(div().min_w(0).truncate().text_color(t.accent).child(title))
+      .when(Boolean(hit?.status), (el) => el.child(div().flex_none().px(4).rounded(3).bg(bg).text_color(fg).text_size(12).font_semibold().line_height("16px").child(hit.status)));
+  }
+
   counts() {
     return { direct: this.unread.direct.length, watching: this.unread.watching.length };
   }
@@ -399,11 +474,8 @@ export class JiraInbox {
   }
 
   open(cx) {
-    this.view.select(JIRA);
     this.kept.clear();
     this.groups.clear();
-    this.cursor = -1;
-    this.view.redraw(cx);
     cx.spawn(async (cx) => this.refresh(cx));
   }
 
@@ -420,8 +492,6 @@ export class JiraInbox {
 
   reset(cx) {
     this.kept.clear();
-    this.groups.clear();
-    this.cursor = -1;
     this.all = null;
     this.view.redraw(cx);
     cx.spawn(async (cx) => this.refresh(cx));
@@ -506,93 +576,125 @@ export class JiraInbox {
     this.mark(n, true, cx);
   }
 
-  // Up, down and Enter, as in Find Channels. Returns whether it used the key.
+  // Up and down move through the list and show each in the reader; Enter opens it in the browser.
   onKey(e, cx) {
-    if (this.view.selected !== JIRA || this.view.typing) return false;
+    if (this.view.section !== JIRA || this.view.typing) return false;
     const list = this.shown();
     if (!list.length) return false;
     if (e.keystroke === "down" || e.keystroke === "up") {
       const step = e.keystroke === "down" ? 1 : -1;
-      this.cursor = this.cursor < 0 ? (step > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, this.cursor + step));
+      const at = list.findIndex((n) => n.id === this.picked?.id);
+      this.picked = list[at < 0 ? (step > 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, at + step))];
       this.view.redraw(cx);
       return true;
     }
-    if (e.keystroke === "enter" && list[this.cursor]) {
-      this.activate(list[this.cursor], cx);
+    if (e.keystroke === "enter" && this.picked) {
+      this.activate(this.picked, cx);
       return true;
     }
     return false;
   }
 
-  sidebarRow(t) {
-    const v = this.view;
-    const active = !v.opening && v.selected === JIRA;
-    const { direct, watching } = this.counts();
-    const lit = active || direct + watching > 0;
-    return div().pb(2).flex_none().child(h_flex().id("jira").relative().h(30).pl(ROW_PAD).pr(8).gap(8).items_center().cursor_pointer()
-      .when(active, (el) => el.bg(t.selected).child(v.activeBar(t))).hover((s) => s.bg(active ? t.selected : t.hover))
-      .on_click((_e, cx) => this.open(cx))
-      .child(v.slot(svg("mods/mattermost/icons/bell.svg").size(14).text_color(lit ? t.foreground : t.muted)))
-      .child(div().flex_1().text_color(lit ? t.foreground : t.muted).when(direct + watching > 0, (el) => el.font_semibold()).child("Jira"))
-      .when(direct > 0, (el) => el.child(v.badge(direct, t))));
+  pick(n, cx) {
+    this.picked = n;
+    this.view.redraw(cx);
   }
 
-  page(t, wide) {
+  // Direct and Watching on the folder strip, with Only show unread, the site and Mark all as read at its end.
+  list(t) {
     const v = this.view;
     const d = dark(t);
-    const blue = BLUE[d ? 0 : 1];
-    const room = v.width - (wide ? v.sideW : 0) - (v.rhsGlobal?.() && v.rhsBeside?.() ? v.rhsW : 0);
-    // The row's text column: the page less its padding, the avatar, the gaps and the dot.
-    this.textW = Math.max(160, room - 16 - 32 - 12 - 12 - 24 - 16);
-    const tab = (id, label) => {
-      const on = this.tab === id;
-      return v_flex().id(`jira-tab-${id}`).h_full().justify_end().cursor_pointer()
-        .on_click((_e, cx) => this.setTab(id, cx))
-        .child(div().pb(6).font_medium().text_color(on ? blue : t.muted).hover((s) => s.text_color(on ? blue : t.foreground)).child(label))
-        .child(div().h(2).w_full().rounded(1).when(on, (el) => el.bg(blue)));
-    };
     const on = this.unreadOnly;
-    const toggle = h_flex().id("jira-unread").flex_none().gap(8).items_center().cursor_pointer().text_size(13).text_color(t.muted)
-      .hover((s) => s.text_color(t.foreground))
-      .on_click((_e, cx) => this.setUnreadOnly(!on, cx))
-      // Below this the title would be squeezed to a letter, so the switch keeps its label in a tooltip.
-      .when(room >= 480, (el) => el.child("Only show unread")).when(room < 480, (el) => el.tooltip("Only show unread"))
+    const counts = this.counts();
+    const toggle = h_flex().id("jira-unread").h(26).px(4).flex_none().items_center().rounded(5).cursor_pointer().tooltip("Only show unread")
+      .hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.setUnreadOnly(!on, cx); })
       .child(h_flex().w(32).h(18).flex_none().rounded(9).px(2).items_center().justify_between()
         .bg(on ? SWITCH[d ? 0 : 1] : alpha(t.foreground, 0.24))
         .child(on ? svg("mods/mattermost/icons/check.svg").size(11).text_color(t.background) : div().size(14).rounded(7).bg("#ffffff"))
         .when(on, (el) => el.child(div().size(14).rounded(7).bg(t.background))));
-    const button = (id, icon, tip, onDown) => div().id(id).p(4).flex_none().rounded(6).cursor_pointer().text_color(t.muted)
-      .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
-      .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); onDown(e, cx); })
-      .child(svg(`mods/mattermost/icons/${icon}.svg`).size(16));
-    const more = button("jira-more", "dots", "More actions", (e) => v.openMenu({
-      kind: "jira", category: this.tab, unread: this.counts()[this.tab] > 0, alignRight: true,
-    }, e.bounds ?? { ...e.position, width: 0, height: 0 }));
+    const right = [
+      toggle,
+      iconButton("jira-site", t, "external-link", "Open Jira", () => openLink(this.cfg.site)),
+      iconButton("jira-more", t, "dots", "More actions", (e) => v.openMenu({
+        kind: "jira", category: this.tab, unread: counts[this.tab] > 0, alignRight: true,
+      }, e.bounds ?? { ...e.position, width: 0, height: 0 })),
+    ];
     const list = this.shown();
-    const empty = on ? "You've read all your notifications from the last 30 days." : "You have no notifications from the last 30 days.";
-    const header = h_flex().h(52).flex_none().pl(wide ? 16 : 8).pr(12).gap(10).items_center()
-      .when(!wide, (el) => el.child(div().id("back").px(6).rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover))
-        .on_click((_e, cx) => { v.selected = null; localStorage.removeItem("selected"); v.redraw(cx); }).child("‹")))
-      .child(div().flex_1().min_w(0).truncate().font_semibold().text_size(20).child("Notifications"))
-      .child(toggle)
-      .child(button("jira-site", "external-link", "Open Jira", () => openLink(this.cfg.site)))
-      .child(more);
-    return v_flex().flex_1().min_w(0).h_full()
-      .child(header)
-      .child(h_flex().h(34).flex_none().mx(16).gap(20).items_end().border_b(1).border_color(t.border)
-        .child(tab("direct", "Direct"))
-        .child(tab("watching", "Watching")))
-      .when(Boolean(this.error), (el) => el.child(div().px(16).py(6).text_size(12).text_color(t.blocked).child(this.error)))
+    const blank = on ? "You've read all your notifications from the last 30 days." : "You have no notifications from the last 30 days.";
+    return v_flex().flex_1().min_h(0)
+      .child(strip(v, t, { id: "jira", current: this.tab, right,
+        tabs: [{ key: "direct", label: "Direct", count: counts.direct }, { key: "watching", label: "Watching", count: counts.watching }],
+        onPick: (key, cx) => this.setTab(key, cx) }))
+      .when(Boolean(this.error), (el) => el.child(div().px(12).py(6).text_size(12).text_color(t.blocked).child(this.error)))
       .child(!this.loaded || (!on && !this.all) || (this.error && !list.length)
         ? div().flex_1()
         : !list.length
-          ? v_flex().flex_1().items_center().justify_center().gap(10).px(20)
-            .child(svg("mods/mattermost/icons/bell.svg").size(32).text_color(t.dim))
-            .child(div().text_size(13).text_color(t.muted).child(empty))
-          : v_flex().id(`jira-${this.tab}-${on}`).flex_1().min_h(0).overflow_y_scrollbar().pb(16)
-            .children(this.rows(list, t, blue))
-            .when(!this.more[on ? this.tab : "all"], (el) => el.child(this.end(t, on)))
-            .child(this.hint(t)));
+          ? empty(t, "bell", blank)
+          : scrollList(`jira-${this.tab}-${on}`, [
+            ...list.map((n) => this.row(n, t)),
+            ...(this.more[on ? this.tab : "all"] ? [] : [this.end(t, on)]),
+            this.hint(t),
+          ]));
+  }
+
+  row(n, t) {
+    const picked = n.id === this.picked?.id;
+    const toggle = div().id(`jn-dot-${n.id}`).absolute().right(6).bottom(8).size(20).flex().items_center().justify_center().rounded(4).cursor_pointer()
+      .tooltip(n.read ? "Mark as unread" : "Mark as read")
+      .when(n.read, (el) => el.opacity(0).hover((s) => s.opacity(1).bg(t.hover)))
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.mark(n, !n.read, cx); })
+      .when(n.read, (el) => el.child(div().size(8).rounded(4).border_1().border_color(t.muted)));
+    return listRow({
+      id: `jn-${n.id}`, icon: this.avatar(n, 36), title: n.message, time: shortAgo(n.time),
+      preview: [n.key, n.title].filter(Boolean).join(" • "), unread: !n.read, dot: !n.read, selected: picked,
+      onClick: (_e, cx) => this.pick(n, cx), extra: [toggle],
+    }, t);
+  }
+
+  // The notification as the feed gives it: Jira's API for the bell has no assignee, priority or other fields.
+  reader(t) {
+    const n = this.picked;
+    if (!n) return this.loaded ? nothingPicked(t) : div();
+    const d = dark(t);
+    const blue = BLUE[d ? 0 : 1];
+    const extra = n.groupSize - 1;
+    const open = this.groups.has(n.groupId);
+    const items = this.groups.get(n.groupId);
+    const others = n.others ?? [];
+    const tag = (text, color) => div().flex_none().px(6).rounded(4).bg(alpha(t.foreground, 0.08)).text_size(11).line_height("17px").text_color(color ?? t.muted).child(text);
+    const site = n.page ? "Confluence" : "Jira";
+    return v_flex().flex_1().min_w(0).h_full()
+      .child(header(t, this.icon(n), div().min_w(0).truncate().child(n.key || site), ...(n.status ? [headerNote(t, n.status)] : []), div().flex_1(),
+        iconButton("jr-open-top", t, "external-link", `Open in ${site}`, (_e, cx) => this.activate(n, cx))))
+      .child(v_flex().id(`jr-${n.id}`).flex_1().min_h(0).overflow_y_scrollbar()
+        .child(v_flex().w_full().max_w(760).mx_auto().px(18).py(16).gap(12)
+          .when(Boolean(n.title), (el) => el.child(div().text_size(18).line_height("24px").font_semibold().text_color(t.foreground).child(n.title)))
+          .child(h_flex().flex_wrap().gap(4).items_center().text_size(12).text_color(t.muted)
+            .when(Boolean(n.key), (el) => el.child(tag(n.key, blue)))
+            .when(Boolean(n.status), (el) => el.child(tag(n.status)))
+            .child(div().pl(2).child(ago(n.time))))
+          .child(h_flex().gap(10).items_center()
+            .child(this.avatar(n, 28))
+            .child(div().flex_1().min_w(0).text_size(14).text_color(t.foreground).child(n.message)))
+          .when(Boolean(n.excerpt || n.link), (el) => el.child(v_flex().px(12).py(10).gap(6).rounded(8).border_1().border_color(t.border).bg(alpha(t.foreground, 0.08)).text_size(14)
+            .when(Boolean(n.excerpt), (el) => el.child(div().text_color(t.foreground).child(n.excerpt)))
+            .when(Boolean(n.link), (el) => el.child(this.link(`jn-link-${n.id}`, h_flex().gap(6).items_center().text_size(13).text_color(t.muted).hover((s) => s.text_color(t.foreground)),
+              () => openLink(n.link))
+              .child(svg("mods/mattermost/icons/link.svg").size(14).flex_none())
+              .child(div().flex_1().min_w(0).truncate().child(n.link))))))
+          .when(extra > 0 && Boolean(n.groupId), (el) => el.child(this.link(`jn-group-${n.id}`, h_flex().gap(8).items_center().text_size(13).text_color(blue).hover((s) => s.opacity(0.8)),
+            (cx) => this.toggleGroup(n, cx))
+            .when(others.length > 0, (el) => el.child(h_flex().flex_none().children(others.slice(0, 3).map((a, k) =>
+              div().when(k > 0, (el) => el.ml(-6)).rounded_full().border_2().border_color(t.background).child(this.avatar(a, 20))))))
+            .child(div().flex_1().min_w(0).truncate()
+              .child(`${open ? "Hide" : "+"}${open ? " " : ""}${extra} ${extra === 1 ? "update" : "updates"}${others[0] ? ` from ${others[0].displayName}${others.length > 1 ? " and others" : ""}` : ""}`))))
+          .when(open, (el) => el.child(v_flex().gap(2)
+            .when(items === null, (el) => el.child(div().py(4).text_size(12).text_color(t.muted).child("Loading…")))
+            .children((items ?? []).map((x) => this.subRow(x, t, blue)))))
+          .child(h_flex().flex_wrap().gap(6).pt(4)
+            .child(button("jr-open", t, `Open in ${site}`, (_e, cx) => this.activate(n, cx), { primary: true, iconName: "external-link" }))
+            .child(button("jr-read", t, n.read ? "Mark as unread" : "Mark as read", (_e, cx) => this.mark(n, !n.read, cx), { iconName: "check" })))));
   }
 
   // As Jira ends the list, with the panel's bell in place of Atlassian's flag.
@@ -607,23 +709,9 @@ export class JiraInbox {
 
   hint(t) {
     const key = (k) => div().px(5).rounded(3).bg(alpha(t.foreground, 0.1)).text_color(t.foreground).child(k);
-    return h_flex().flex_none().mx(16).px(10).py(8).gap(5).items_center().flex_wrap().rounded(4).border_1().border_color(t.border)
+    return h_flex().flex_none().mx(12).px(10).py(8).gap(5).items_center().flex_wrap().rounded(4).border_1().border_color(t.border)
       .text_size(13).text_color(t.muted)
       .child("Press").child(key("↓")).child(key("↑")).child("to move through notifications.");
-  }
-
-  rows(list, t, blue) {
-    const out = [];
-    let last = null;
-    list.forEach((n, i) => {
-      const label = dayLabel(n.time);
-      if (label !== last) {
-        out.push(div().flex_none().px(16).pt(14).pb(4).text_size(13).font_semibold().text_color(t.foreground).child(label));
-        last = label;
-      }
-      out.push(this.row(n, i, t, blue));
-    });
-    return out;
   }
 
   avatar(person, size) {
@@ -644,76 +732,21 @@ export class JiraInbox {
       .child(mark ? svg(`mods/mattermost/icons/${mark}.svg`).size(10).text_color("#ffffff") : div().size(6).rounded(3).bg("#ffffff"));
   }
 
-  dotButton(n, t, blue) {
-    const unread = !n.read;
-    return div().id(`jn-dot-${n.id}`).size(24).flex().items_center().justify_center().rounded(4).cursor_pointer()
-      .tooltip(unread ? "Mark as read" : "Mark as unread")
-      .hover((s) => s.bg(alpha(t.foreground, 0.08)))
-      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.mark(n, unread, cx); })
-      .child(unread ? div().size(8).rounded(4).bg(blue) : div().size(8).rounded(4).border_1().border_color(t.muted));
-  }
-
-  // The dot is the toggle, as in Jira: a press on it changes the read state without opening anything. A read
-  // row offers it only on hover, through a layer the row's own hover can't do for a child.
-  dot(el, n, t, blue, top, right) {
-    return el.child(div().w(24).h(24).flex_none().when(!n.read, (el) => el.child(this.dotButton(n, t, blue))))
-      .when(n.read, (el) => el.child(div().absolute().inset_0().opacity(0).hover((s) => s.opacity(1))
-        .child(div().absolute().top(top).right(right).child(this.dotButton(n, t, blue)))));
-  }
-
   // A link inside a row: it acts alone, without the row's own click.
   link(id, el, run) {
     return el.id(id).cursor_pointer().on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); run(cx); });
   }
 
-  row(n, i, t, blue) {
-    const picked = i === this.cursor;
-    const w = this.textW;
-    const card = Boolean(n.excerpt || n.link);
-    const extra = n.groupSize - 1;
-    const open = this.groups.has(n.groupId);
-    const items = this.groups.get(n.groupId);
-    const others = n.others ?? [];
-    const content = v_flex().flex_1().min_w(0)
-      .child(h_flex().flex_wrap().gap_x(6).items_baseline()
-        .child(div().min_w(0).max_w_full().font_semibold().text_color(t.foreground).child(n.message))
-        .child(div().flex_none().text_size(13).text_color(t.muted).child(ago(n.time))))
-      .when(Boolean(n.title), (el) => el.child(h_flex().mt(2).gap(6).items_start()
-        .child(div().mt(2).child(this.icon(n)))
-        .child(div().flex_1().min_w(0).max_h(2 * TITLE_LINE).overflow_hidden().line_height(`${TITLE_LINE}px`).text_color(t.foreground)
-          .child(fit(n.title, w - 22, 2, 14)))))
-      .when(Boolean(n.meta), (el) => el.child(div().mt(2).text_size(12).text_color(t.muted).truncate().child(n.meta)))
-      .when(card, (el) => el.child(v_flex().mt(8).px(10).py(8).gap(4).rounded(4).border_1().border_color(t.border).text_size(13)
-        .when(Boolean(n.excerpt), (el) => el.child(div().max_h(2 * BODY_LINE).overflow_hidden().line_height(`${BODY_LINE}px`).text_color(t.foreground)
-          .child(fit(n.excerpt, w - 22, 2, 13))))
-        .when(Boolean(n.link), (el) => el.child(this.link(`jn-link-${n.id}`, h_flex().gap(6).items_center().text_color(t.muted).hover((s) => s.text_color(t.foreground)),
-          () => openLink(n.link))
-          .child(svg("mods/mattermost/icons/link.svg").size(14).flex_none())
-          .child(div().flex_1().min_w(0).truncate().child(n.link))))))
-      .when(n.comment, (el) => el.child(h_flex().mt(6).justify_end()
-        .child(this.link(`jn-thread-${n.id}`, div().text_size(13).font_semibold().text_color(blue).hover((s) => s.opacity(0.8)), (cx) => this.activate(n, cx))
-          .child("View thread"))))
-      .when(extra > 0 && Boolean(n.groupId), (el) => el.child(this.link(`jn-group-${n.id}`, h_flex().mt(10).gap(8).items_center().text_color(blue).hover((s) => s.opacity(0.8)),
-        (cx) => this.toggleGroup(n, cx))
-        .when(others.length > 0, (el) => el.child(h_flex().flex_none().children(others.slice(0, 3).map((a, k) =>
-          div().when(k > 0, (el) => el.ml(-6)).rounded_full().border_2().border_color(t.background).child(this.avatar(a, 20))))))
-        .child(div().flex_1().min_w(0).truncate()
-          .child(`+${extra} ${extra === 1 ? "update" : "updates"}${others[0] ? ` from ${others[0].displayName}${others.length > 1 ? " and others" : ""}` : ""}`))))
-      .when(open, (el) => el.child(v_flex().mt(6).gap(2)
-        .when(items === null, (el) => el.child(div().py(4).text_size(12).text_color(t.muted).child("Loading…")))
-        .children((items ?? []).map((x) => this.subRow(x, t, blue)))));
-    return this.dot(h_flex().id(`jn-${n.id}`).relative().px(16).py(10).gap(12).items_start().cursor_pointer()
-      .when(picked, (el) => el.bg(t.selected)).hover((s) => s.bg(picked ? t.selected : t.hover))
-      .on_click((_e, cx) => { this.cursor = i; this.activate(n, cx); })
-      .child(this.avatar(n, 32))
-      .child(content), n, t, blue, 10, 16);
-  }
-
+  // A group's older item: a click opens it, and its dot marks it read or unread without opening anything.
   subRow(n, t, blue) {
-    return this.dot(this.link(`jn-sub-${n.id}`, h_flex().relative().py(4).gap(8).items_center().rounded(4).hover((s) => s.bg(t.hover)), (cx) => this.activate(n, cx))
+    return this.link(`jn-sub-${n.id}`, h_flex().relative().px(6).py(4).gap(8).items_center().rounded(4).hover((s) => s.bg(t.hover)), (cx) => this.activate(n, cx))
       .child(this.avatar(n, 20))
       .child(h_flex().flex_1().min_w(0).gap(6).items_baseline().text_size(13)
         .child(div().min_w(0).truncate().font_semibold().text_color(t.foreground).child(n.message))
-        .child(div().flex_none().text_size(12).text_color(t.muted).child(ago(n.time)))), n, t, blue, 2, 0);
+        .child(div().flex_none().text_size(12).text_color(t.muted).child(ago(n.time))))
+      .child(div().id(`jn-dot-${n.id}`).size(24).flex().flex_none().items_center().justify_center().rounded(4).cursor_pointer()
+        .tooltip(n.read ? "Mark as unread" : "Mark as read").hover((s) => s.bg(alpha(t.foreground, 0.08)))
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.mark(n, !n.read, cx); })
+        .child(n.read ? div().size(8).rounded(4).border_1().border_color(t.muted) : div().size(8).rounded(4).bg(blue)));
   }
 }

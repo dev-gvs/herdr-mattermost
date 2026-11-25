@@ -1,6 +1,6 @@
 # Mattermost for Herdr
 
-A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, drawn like the Mattermost desktop app. It has the channel sidebar with your categories, unreads and statuses, and live channels with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, Find Channels, inline editing with the same formatting bar, drafts, the post menu, Recent Mentions, Saved messages, your status and custom status, your profile, Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands), and its message box with the formatting bar and shortcuts, message priority, file uploads and preview. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
+A [Herdr](https://herdr.dev) mod that puts your Mattermost team in a panel beside your terminals, as a reading pane: Find, Chats, Threads, Drafts and You (plus an optional Jira inbox), each a list with a reader beside it. A Collapse tab folds it to a column of section icons with their badges, and it fits a narrow side panel (list over reader), a medium pane (list beside reader) and a full window (a rail, the list, the reader and the conversation's details). Chats are filtered by your sidebar categories, and every row shows the latest message. Conversations are live, with markdown, images, GIFs, bot attachments, link previews, threads, reactions, the emoji picker, inline editing, drafts, the post menu, your status and custom status, your profile, Mattermost's suggestions as you type (`@` people and groups, `~` channels, `:` emoji, `/` commands), and a one-line message box with Mattermost's formatting shortcuts and file uploads. Videos play in `mpv`, in their own window, because Herdr can't play them inside a panel.
 
 ![Mattermost in Herdr](preview.png)
 
@@ -78,7 +78,7 @@ Mentions, direct messages and, if you chose them, every post or followed threads
 ## Privacy
 
 - The token goes only to your Mattermost server: the API, the websocket and the downloads of its files.
-- `curl` reads the token from `~/.config/herdr-app/data/mattermost/private/curl.conf`, readable only by you. Log out in the account menu deletes it along with `mattermost.json`. The token stays valid until you revoke it in Mattermost, so revoke it there if it may have leaked.
+- `curl` reads the token from `~/.config/herdr-app/data/mattermost/private/curl.conf`, readable only by you. Log out under You › Profile deletes it along with `mattermost.json`. The token stays valid until you revoke it in Mattermost, so revoke it there if it may have leaked.
 - Webhook icons, images in messages and link preview pictures from other hosts are downloaded without the token. Those hosts see your address, as they would in a browser.
 - Avatars, emoji, images and attachments are cached in `~/.config/herdr-app/data/mattermost/`. Files you open stay there for two weeks, and pictures from other hosts for 30 days.
 - Unsent drafts stay in `~/.config/herdr-app/data/mattermost/`, readable only by you. When your server allows synced drafts they also go to it, as the web app's do.
@@ -89,7 +89,7 @@ Mentions, direct messages and, if you chose them, every post or followed threads
 
 ## Jira notifications (optional)
 
-The panel can also show your Jira Cloud notifications, like Jira's bell: a Jira row under Threads with the unread count, and a page with Direct and Watching tabs, Only show unread, and a row per notification drawn as Jira draws it: the issue or page, its status or space, the comment, and the group of updates behind it, which a click opens. A click on a row opens the issue or page in the browser and marks it read, the dot on the right marks it read or unread, and ⋮ marks the whole tab read. It's off unless you add a `jira` block to the panel's props:
+The panel can also show your Jira Cloud notifications, like Jira's bell: a Jira tab with the unread Direct count, Direct and Watching on its strip, Only show unread, and a row per notification. Selecting a row shows it in the reader: the issue or page, its status or space, the comment, and the group of updates behind it. Open in Jira opens it in the browser and marks it read, Mark as read and the dot on a row mark it read or unread, and ⋮ marks the whole tab read. It's off unless you add a `jira` block to the panel's props:
 
 ```json
 "props": { "jira": { "site": "https://your-site.atlassian.net", "credentials": "~/.config/jira.conf" } }
@@ -105,7 +105,21 @@ token = <API token>
 
 The token is read from that file for each request and goes only to your Jira site. It never goes in props, the panel's own files or its log. Issue type icons on your site are downloaded with it, as Jira's own page does; actors' pictures and icons on other hosts are downloaded without it. With `"demo": true`, any `jira` value shows made-up notifications.
 
+With the `jira` block, a link to an issue on that site shows in messages as Jira draws it: the type icon, the key and summary, and the status lozenge. A link inside code stays as typed, and an issue you can't see stays a plain link. Lines holding a card are drawn by the panel itself rather than as markdown, so their text can't be selected.
+
 ![Jira notifications](screenshots/jira.png)
+
+## Send a message to an agent (optional)
+
+With an `agent` block in the panel's props, a post's hover bar gets an outlined Claude Code mascot in violet that starts an agent in `folder`, in a new tab of the space for that folder: the one named after it, else the one whose folder it is, else a new one. The post's ⋯ menu has the same entry.
+
+```json
+"props": { "agent": { "label": "Send to Claude Code", "folder": "~/Projects/app", "argv": ["claude"], "messages": ["{link}"] } }
+```
+
+The first message goes to the agent on its command line, and each later one is typed in once the turn before is done. `{link}` is the post's link. `argv` defaults to `["claude"]`, `messages` to `["{link}"]` and `label` to "Send to Claude Code". It needs `hc` (herdr-core). A second click on the same post brings back the agent it started while that one is still running.
+
+With [herdr-chat](https://github.com/ChmaraX/herdr-chat) installed, `"chat": "claude"` (or another of its providers) in the block opens a chat tab instead of a terminal. `argv` isn't used then, and `hc` isn't needed. The messages go to the chat as its `prompt` prop, which needs a herdr-chat that reads it; one that doesn't opens the chat empty. A second click shows the chat again, and after its tab was closed reopens it on the same session.
 
 [RECIPE.md](RECIPE.md) is the full brief for building or changing it.
 
@@ -127,21 +141,9 @@ The image viewer and its right-click menu:
 
 ![The image viewer and its right-click menu](screenshots/image-viewer.png)
 
-Recent Mentions and its filters:
-
-![Recent Mentions and its filters](screenshots/mentions.png)
-
-The message box with its formatting bar and a message priority:
-
-![The message box with its formatting bar and a message priority](screenshots/composer.png)
-
 Suggestions while typing:
 
 ![Suggestions while typing](screenshots/suggestions.png)
-
-The account menu:
-
-![The account menu](screenshots/account-menu.png)
 
 Profile:
 
